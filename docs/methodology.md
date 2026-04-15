@@ -8,6 +8,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Engagement intensity
 - Interaction network topology
 - Topic and sentiment drift over time
+- Educational replication of conversation dynamics in controlled target servers
 
 ## Data governance model
 
@@ -16,6 +17,8 @@ The platform supports longitudinal and cross-sectional analyses of:
 3. **Anonymized identifiers** prevent direct attribution.
 4. **Redacted message excerpts** reduce exposure of sensitive free text.
 5. **Retention settings** support GDPR/CCPA-aligned data lifecycle workflows.
+6. **Controlled replication mode** requires explicit educational confirmation and preconfigured source/target server records.
+7. **Token minimization** stores masked token previews in APIs and excludes token values from activity logs.
 
 ## Recommended disclosure for publications
 
@@ -25,6 +28,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 - NLP model and prompt design (OpenRouter model name/version)
 - Known limitations and bias controls
 - Reproducibility notes for aggregate metric exports
+- Replication protocol constraints, including tag-response logic and controlled-environment scope
 
 ## Administrator value
 
@@ -32,9 +36,18 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Channel activity timing patterns
 - Interaction graph transparency
 - Topic-level signal monitoring
+- Safe sandboxing workflows for educational replication experiments
 
 ## Researcher value
 
 - Exportable aggregate metrics for reports
 - Transparent methodology endpoint for appendices
 - Privacy-first defaults suitable for institutional review workflows
+- Account-token health monitoring and rotation metadata for reproducible replication studies
+
+## Educational replication ethics checklist
+
+- Use only explicit participant-informed and server-authorized environments.
+- Never run replication workloads against communities without documented approval.
+- Keep all outputs anonymized in publications, demos, and data exports.
+- Maintain transparent logs for token health checks, pattern capture events, and replication sessions.

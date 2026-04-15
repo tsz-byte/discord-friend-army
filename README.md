@@ -1,6 +1,6 @@
 # Discord Community Analytics & Research Platform
 
-A privacy-first analytics platform for **authorized Discord communities** focused on academic study of digital communication patterns.
+A privacy-first analytics platform for **authorized Discord communities** focused on academic study of digital communication patterns, now including controlled educational conversation replication tooling.
 
 ## What this repository includes
 
@@ -10,6 +10,7 @@ A privacy-first analytics platform for **authorized Discord communities** focuse
 - **OpenRouter NLP integration** for sentiment and topic modeling (with local fallback heuristics)
 - **React + D3 dashboard** for communication flow, sentiment trends, and activity heatmaps
 - **Transparent activity logging** with structured JSON log events
+- **Educational replication modules** for account token management, server connections, pattern capture, and controlled conversation run simulation
 
 ## Architecture
 
@@ -27,6 +28,7 @@ This project is designed around Discord ToS and academic ethics constraints:
 - Salted SHA-256 anonymization for participant identifiers
 - GDPR/CCPA-oriented retention and deletion patterns
 - Methodology endpoint for publication transparency (`/api/v1/compliance/methodology`)
+- Educational replication runs require explicit confirmation and are restricted to controlled environments
 
 ## Quick start
 
@@ -67,6 +69,13 @@ npm run dev
 - `GET /api/v1/analytics/activity-heatmap?guild_id=...`
 - `GET /api/v1/analytics/interaction-flow?guild_id=...`
 - `GET /api/v1/compliance/methodology`
+- `POST /api/v1/replication/tokens`
+- `POST /api/v1/replication/tokens/{token_id}/health-check`
+- `POST /api/v1/replication/tokens/rotate`
+- `PATCH /api/v1/replication/tokens/{token_id}/status`
+- `POST /api/v1/replication/servers`
+- `POST /api/v1/replication/patterns/capture`
+- `POST /api/v1/replication/control/start`
 
 ## Research publication support
 

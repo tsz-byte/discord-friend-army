@@ -7,11 +7,19 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.research import GuildOptIn, MessageResearchEvent, UserPrivacyPreference
 from app.schemas.research import (
+    AccountTokenCreateRequest,
+    AccountTokenResponse,
+    AccountTokenStatusRequest,
     AnalyticsOverview,
     ComplianceMethodology,
     GuildOptInRequest,
     GuildOptInResponse,
     MessageIngestRequest,
+    PatternCaptureRequest,
+    ReplicationResponse,
+    ReplicationStartRequest,
+    ServerConnectionRequest,
+    ServerConnectionResponse,
     UserPrivacyRequest,
 )
 from app.core.config import get_settings
@@ -19,8 +27,12 @@ from app.services.activity_logger import log_event
 from app.services.cache import CacheService
 from app.services.discord_client import DiscordClient
 from app.services.openrouter_nlp import OpenRouterNLPService
+from app.services.pattern_analyzer import MessagePatternAnalyzer
 from app.services.privacy import PrivacyService
 from app.services.rate_limit import DiscordRateLimiter
+from app.services.replication_engine import ConversationReplicationEngine
+from app.services.token_manager import TokenManagerService
+from app.models.research import AccountToken, MessagePattern, ReplicationSession, ServerConnection
 
 router = APIRouter(prefix='/api/v1')
 settings = get_settings()
@@ -29,6 +41,9 @@ cache = CacheService()
 nlp = OpenRouterNLPService()
 discord_client = DiscordClient()
 rate_limiter = DiscordRateLimiter(limit_per_minute=settings.discord_requests_per_minute)
+token_manager = TokenManagerService()
+pattern_analyzer = MessagePatternAnalyzer()
+replication_engine = ConversationReplicationEngine()
 
 
 @router.post('/consent/opt-in', response_model=GuildOptInResponse)
@@ -139,6 +154,248 @@ def update_user_privacy(request: UserPrivacyRequest, db: Session = Depends(get_d
     return {'status': 'updated'}
 
 
+@router.post('/replication/tokens', response_model=AccountTokenResponse)
+def add_account_token(request: AccountTokenCreateRequest, db: Session = Depends(get_db)):
+    record = token_manager.upsert_token(db, request.label, request.token_value, request.rotation_priority)
+    log_event('account_token_saved', {'token_id': record.id, 'label': record.label})
+    return AccountTokenResponse(
+        id=record.id,
+        label=record.label,
+        token_preview=token_manager.token_preview(record.token_value),
+        is_active=record.is_active,
+        health_status=record.health_status,
+        rotation_priority=record.rotation_priority,
+        usage_count=record.usage_count,
+    )
+
+
+@router.get('/replication/tokens', response_model=list[AccountTokenResponse])
+def list_account_tokens(db: Session = Depends(get_db)):
+    rows = db.query(AccountToken).order_by(AccountToken.id.desc()).all()
+    return [
+        AccountTokenResponse(
+            id=row.id,
+            label=row.label,
+            token_preview=token_manager.token_preview(row.token_value),
+            is_active=row.is_active,
+            health_status=row.health_status,
+            rotation_priority=row.rotation_priority,
+            usage_count=row.usage_count,
+        )
+        for row in rows
+    ]
+
+
+@router.post('/replication/tokens/{token_id}/health-check', response_model=AccountTokenResponse)
+async def check_account_token_health(token_id: int, db: Session = Depends(get_db)):
+    row = db.query(AccountToken).filter(AccountToken.id == token_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Token not found')
+    checked = await token_manager.health_check(db, row)
+    log_event('account_token_health_checked', {'token_id': token_id, 'health_status': checked.health_status})
+    return AccountTokenResponse(
+        id=checked.id,
+        label=checked.label,
+        token_preview=token_manager.token_preview(checked.token_value),
+        is_active=checked.is_active,
+        health_status=checked.health_status,
+        rotation_priority=checked.rotation_priority,
+        usage_count=checked.usage_count,
+    )
+
+
+@router.post('/replication/tokens/rotate', response_model=AccountTokenResponse)
+def rotate_account_token(db: Session = Depends(get_db)):
+    row = token_manager.pick_for_rotation(db)
+    if row is None:
+        raise HTTPException(status_code=404, detail='No active tokens available')
+    log_event('account_token_rotated', {'token_id': row.id, 'usage_count': row.usage_count})
+    return AccountTokenResponse(
+        id=row.id,
+        label=row.label,
+        token_preview=token_manager.token_preview(row.token_value),
+        is_active=row.is_active,
+        health_status=row.health_status,
+        rotation_priority=row.rotation_priority,
+        usage_count=row.usage_count,
+    )
+
+
+@router.patch('/replication/tokens/{token_id}/status', response_model=AccountTokenResponse)
+def set_account_token_status(token_id: int, request: AccountTokenStatusRequest, db: Session = Depends(get_db)):
+    row = db.query(AccountToken).filter(AccountToken.id == token_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Token not found')
+    row.is_active = request.is_active
+    db.commit()
+    db.refresh(row)
+    log_event('account_token_status_updated', {'token_id': token_id, 'is_active': row.is_active})
+    return AccountTokenResponse(
+        id=row.id,
+        label=row.label,
+        token_preview=token_manager.token_preview(row.token_value),
+        is_active=row.is_active,
+        health_status=row.health_status,
+        rotation_priority=row.rotation_priority,
+        usage_count=row.usage_count,
+    )
+
+
+@router.post('/replication/servers', response_model=ServerConnectionResponse)
+async def save_server_connection(request: ServerConnectionRequest, db: Session = Depends(get_db)):
+    if request.role == 'source':
+        guild_opt_in = db.query(GuildOptIn).filter(GuildOptIn.guild_id == request.guild_id, GuildOptIn.opted_in.is_(True)).first()
+        if guild_opt_in is None:
+            raise HTTPException(status_code=403, detail='Source servers must opt in before connection')
+
+    guild_data = await discord_client.get_guild(request.guild_id)
+    row = (
+        db.query(ServerConnection)
+        .filter(ServerConnection.guild_id == request.guild_id, ServerConnection.role == request.role)
+        .first()
+    )
+    joined_status = 'joined' if guild_data.get('id') else 'pending'
+    guild_name = guild_data.get('name', request.guild_name)
+    if row is None:
+        row = ServerConnection(
+            guild_id=request.guild_id,
+            guild_name=guild_name,
+            role=request.role,
+            enabled=request.enabled,
+            joined_status=joined_status,
+            research_scope=request.research_scope,
+        )
+        db.add(row)
+    else:
+        row.guild_name = guild_name
+        row.enabled = request.enabled
+        row.joined_status = joined_status
+        row.research_scope = request.research_scope
+    db.commit()
+    db.refresh(row)
+    log_event('server_connection_saved', {'guild_id': row.guild_id, 'role': row.role, 'joined_status': row.joined_status})
+    return ServerConnectionResponse(
+        id=row.id,
+        guild_id=row.guild_id,
+        guild_name=row.guild_name,
+        role=row.role,
+        enabled=row.enabled,
+        joined_status=row.joined_status,
+        research_scope=row.research_scope,
+    )
+
+
+@router.get('/replication/servers', response_model=list[ServerConnectionResponse])
+def list_server_connections(db: Session = Depends(get_db)):
+    rows = db.query(ServerConnection).order_by(ServerConnection.id.desc()).all()
+    return [
+        ServerConnectionResponse(
+            id=row.id,
+            guild_id=row.guild_id,
+            guild_name=row.guild_name,
+            role=row.role,
+            enabled=row.enabled,
+            joined_status=row.joined_status,
+            research_scope=row.research_scope,
+        )
+        for row in rows
+    ]
+
+
+@router.post('/replication/patterns/capture')
+def capture_patterns(request: PatternCaptureRequest, db: Session = Depends(get_db)):
+    patterns = pattern_analyzer.capture_patterns(
+        db=db,
+        source_guild_id=request.source_guild_id,
+        min_messages_per_user=request.min_messages_per_user,
+        max_patterns=request.max_patterns,
+    )
+    log_event('message_patterns_captured', {'source_guild_id': request.source_guild_id, 'count': len(patterns)})
+    return {
+        'captured_count': len(patterns),
+        'patterns': [
+            {
+                'id': item.id,
+                'author_hash': item.author_hash,
+                'style_vector': item.style_vector,
+                'sample_messages': item.sample_messages,
+            }
+            for item in patterns
+        ],
+    }
+
+
+@router.get('/replication/patterns')
+def list_patterns(source_guild_id: str, db: Session = Depends(get_db)):
+    rows = db.query(MessagePattern).filter(MessagePattern.source_guild_id == source_guild_id).all()
+    return [
+        {
+            'id': row.id,
+            'source_guild_id': row.source_guild_id,
+            'author_hash': row.author_hash,
+            'style_vector': row.style_vector,
+            'active_hours': row.active_hours,
+            'mention_likelihood': row.mention_likelihood,
+        }
+        for row in rows
+    ]
+
+
+@router.post('/replication/control/start', response_model=ReplicationResponse)
+def start_replication(request: ReplicationStartRequest, db: Session = Depends(get_db)):
+    if not settings.educational_replication_only:
+        raise HTTPException(status_code=400, detail='Replication feature must run in educational-only mode')
+    if not request.educational_mode_confirmed:
+        raise HTTPException(status_code=400, detail='Educational mode confirmation is required')
+
+    source_connection = (
+        db.query(ServerConnection)
+        .filter(ServerConnection.guild_id == request.source_guild_id, ServerConnection.role == 'source', ServerConnection.enabled.is_(True))
+        .first()
+    )
+    target_connection = (
+        db.query(ServerConnection)
+        .filter(ServerConnection.guild_id == request.target_guild_id, ServerConnection.role == 'target', ServerConnection.enabled.is_(True))
+        .first()
+    )
+    if source_connection is None or target_connection is None:
+        raise HTTPException(status_code=400, detail='Both source and target server connections must be configured and enabled')
+
+    session, generated_messages = replication_engine.run_session(
+        db=db,
+        source_guild_id=request.source_guild_id,
+        target_guild_id=request.target_guild_id,
+        turn_count=request.turn_count,
+        context_tag_trigger=request.context_tag_trigger,
+    )
+    log_event(
+        'replication_session_completed',
+        {
+            'session_id': session.id,
+            'source_guild_id': session.source_guild_id,
+            'target_guild_id': session.target_guild_id,
+            'generated_count': len(generated_messages),
+        },
+    )
+    return ReplicationResponse(session_id=session.id, status=session.status, generated_messages=generated_messages)
+
+
+@router.get('/replication/control/sessions')
+def list_replication_sessions(db: Session = Depends(get_db)):
+    rows = db.query(ReplicationSession).order_by(ReplicationSession.id.desc()).all()
+    return [
+        {
+            'id': row.id,
+            'source_guild_id': row.source_guild_id,
+            'target_guild_id': row.target_guild_id,
+            'mode': row.mode,
+            'status': row.status,
+            'session_metrics': row.session_metrics,
+        }
+        for row in rows
+    ]
+
+
 @router.get('/analytics/overview', response_model=AnalyticsOverview)
 def analytics_overview(guild_id: str, db: Session = Depends(get_db)):
     cache_key = f'overview:{guild_id}'
@@ -219,12 +476,13 @@ def interaction_flow(guild_id: str, db: Session = Depends(get_db)):
 def compliance_methodology() -> ComplianceMethodology:
     return ComplianceMethodology(
         methodology_version='2026.04',
-        consent_model='Server-level opt-in plus participant-level transparency and opt-out controls',
-        anonymization='All user identifiers are salted SHA-256 hashes; only redacted message excerpts are stored',
-        retention_policy='Default 90-day retention with configurable deletion policies for GDPR/CCPA requests',
+        consent_model='Server-level opt-in plus participant-level transparency and opt-out controls; educational replication runs require explicit confirmation',
+        anonymization='All user identifiers are salted SHA-256 hashes; only redacted message excerpts and masked token previews are exposed',
+        retention_policy='Default 90-day retention with configurable deletion policies for GDPR/CCPA requests and controlled-environment replication datasets',
         publication_support=[
             'Export-ready aggregate metrics',
             'Anonymized interaction network snapshots',
             'Methodology and limitation documentation endpoints',
+            'Educational conversation replication session metadata with account masking',
         ],
     )

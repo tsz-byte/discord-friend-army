@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')
+    educational_replication_only: bool = Field(default=True)
 
 
 @lru_cache

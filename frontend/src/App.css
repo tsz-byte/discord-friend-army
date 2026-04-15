@@ -1,13 +1,16 @@
 .layout {
-  max-width: 1160px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
   display: grid;
-  gap: 1.2rem;
+  gap: 1rem;
 }
 
-header h1 {
-  margin-bottom: 0.4rem;
+.panel {
+  border: 1px solid #d1d5db;
+  border-radius: 0.6rem;
+  background: #fff;
+  padding: 0.9rem;
 }
 
 .controls {
@@ -16,8 +19,9 @@ header h1 {
   align-items: center;
 }
 
-.controls input {
-  min-width: 280px;
+.controls input,
+.form-grid input {
+  min-width: 220px;
   padding: 0.45rem;
 }
 
@@ -30,17 +34,14 @@ header h1 {
 .metrics article {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
-  padding: 0.8rem;
+  padding: 0.75rem;
   background: #f8fafc;
 }
 
-.metrics strong {
-  font-size: 1.35rem;
-}
-
-.chart-grid {
+.chart-grid,
+.split-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(300px, 1fr));
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
   gap: 1rem;
 }
 
@@ -48,40 +49,67 @@ header h1 {
   width: 100%;
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
-  background: white;
+  background: #fff;
 }
 
 .heat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 0.5rem;
+  gap: 0.45rem;
 }
 
 .heat-cell {
   display: grid;
+  border-radius: 0.4rem;
   border: 1px solid #e5e7eb;
-  border-radius: 0.45rem;
-  padding: 0.45rem;
   background: #1d4ed8;
-  color: white;
+  color: #fff;
+  padding: 0.45rem;
 }
 
+.form-grid {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+}
+
+.inline-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.collection,
 .topics {
+  list-style: none;
   margin: 0;
   padding: 0;
-  list-style: none;
   display: grid;
   gap: 0.45rem;
 }
 
+.collection li,
 .topics li {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.45rem;
+  padding: 0.45rem;
   display: flex;
   justify-content: space-between;
-  border-bottom: 1px dashed #d1d5db;
-  padding-bottom: 0.3rem;
+  gap: 0.4rem;
+}
+
+.topics li {
+  align-items: center;
 }
 
 .error {
   color: #dc2626;
   font-weight: 600;
+}
+
+@media (max-width: 980px) {
+  .chart-grid,
+  .split-grid,
+  .metrics {
+    grid-template-columns: 1fr;
+  }
 }

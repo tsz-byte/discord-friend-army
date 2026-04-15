@@ -46,3 +46,61 @@ class ComplianceMethodology(BaseModel):
     anonymization: str
     retention_policy: str
     publication_support: list[str]
+
+
+class AccountTokenCreateRequest(BaseModel):
+    label: str = Field(min_length=2, max_length=128)
+    token_value: str = Field(min_length=20, max_length=500)
+    rotation_priority: int = Field(default=100, ge=1, le=1000)
+
+
+class AccountTokenResponse(BaseModel):
+    id: int
+    label: str
+    token_preview: str
+    is_active: bool
+    health_status: str
+    rotation_priority: int
+    usage_count: int
+
+
+class AccountTokenStatusRequest(BaseModel):
+    is_active: bool
+
+
+class ServerConnectionRequest(BaseModel):
+    guild_id: str
+    guild_name: str
+    role: str = Field(pattern='^(source|target)$')
+    enabled: bool = True
+    research_scope: str = 'educational_replication'
+
+
+class ServerConnectionResponse(BaseModel):
+    id: int
+    guild_id: str
+    guild_name: str
+    role: str
+    enabled: bool
+    joined_status: str
+    research_scope: str
+
+
+class PatternCaptureRequest(BaseModel):
+    source_guild_id: str
+    min_messages_per_user: int = Field(default=2, ge=1, le=1000)
+    max_patterns: int = Field(default=20, ge=1, le=200)
+
+
+class ReplicationStartRequest(BaseModel):
+    source_guild_id: str
+    target_guild_id: str
+    turn_count: int = Field(default=8, ge=1, le=100)
+    context_tag_trigger: str = '@'
+    educational_mode_confirmed: bool = False
+
+
+class ReplicationResponse(BaseModel):
+    session_id: int
+    status: str
+    generated_messages: list[dict]
