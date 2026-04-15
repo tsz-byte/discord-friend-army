@@ -68,6 +68,7 @@ class ServerConnection(Base):
     guild_id = Column(String(32), nullable=False, index=True)
     guild_name = Column(String(255), nullable=False)
     role = Column(String(16), nullable=False, index=True)  # source or target
+    invite_link = Column(String(512), nullable=True)
     enabled = Column(Boolean, default=True, nullable=False)
     joined_status = Column(String(32), default='pending', nullable=False)
     research_scope = Column(String(255), nullable=False, default='educational_replication')
