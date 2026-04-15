@@ -141,7 +141,9 @@ function App() {
       links.attr('x1', (d) => ((d.source as GraphNode).x ?? 0)).attr('y1', (d) => ((d.source as GraphNode).y ?? 0)).attr('x2', (d) => ((d.target as GraphNode).x ?? 0)).attr('y2', (d) => ((d.target as GraphNode).y ?? 0))
       circles.attr('cx', (d) => d.x ?? 0).attr('cy', (d) => d.y ?? 0)
     })
-    return () => simulation.stop()
+    return () => {
+      simulation.stop()
+    }
   }, [flowEdges])
 
   const submitToken = async () => {

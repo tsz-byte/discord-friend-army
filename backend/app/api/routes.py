@@ -24,6 +24,7 @@ from app.schemas.research import (
     ReplicationStartRequest,
     ServerConnectionRequest,
     ServerConnectionResponse,
+    SystemStatusResponse,
     UserPrivacyRequest,
 )
 from app.core.config import get_settings
