@@ -177,3 +177,17 @@ class ProxyEntry(Base):
     failure_count = Column(Integer, default=0, nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AppSetting(Base):
+    """Runtime-editable key/value settings stored in the database.
+
+    These override environment variables without requiring a restart.
+    """
+
+    __tablename__ = 'app_setting'
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(128), nullable=False, unique=True, index=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

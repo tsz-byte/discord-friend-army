@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import logging
+import logging.handlers
 import traceback
 
 # Ensure backend package is importable
@@ -36,11 +37,31 @@ TARGET_GUILD_ID = '1425152532807684167'
 TARGET_GUILD_INVITE = 'https://discord.gg/asTTvgMe'
 TARGET_CHANNEL_ID = '1459350794649342185'
 
+# ---------------------------------------------------------------------------
+# Logging — console + rotating file handlers
+# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
 )
 logger = logging.getLogger('discord_friend_army')
+
+# Attach a RotatingFileHandler so errors are always persisted on disk.
+_error_log_path = os.path.join(ROOT_DIR, 'errors.txt')
+_error_file_handler = logging.handlers.RotatingFileHandler(
+    _error_log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
+_error_file_handler.setLevel(logging.ERROR)
+_error_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+logging.getLogger().addHandler(_error_file_handler)
+
+_app_log_path = os.path.join(ROOT_DIR, 'app.log')
+_app_file_handler = logging.handlers.RotatingFileHandler(
+    _app_log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding='utf-8'
+)
+_app_file_handler.setLevel(logging.INFO)
+_app_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+logging.getLogger().addHandler(_app_file_handler)
 
 
 def print_banner() -> None:
@@ -50,6 +71,29 @@ def print_banner() -> None:
     print('   Multi-Account Bot Mimic System')
     print('=' * 60)
     print()
+
+
+def _ensure_vite_env_var(env_path: str, key: str, value: str) -> None:
+    """Write or replace a variable in a Vite .env file.
+
+    Creates the file if it does not exist.  Always ensures ``key=value`` is
+    present so the built frontend uses the correct setting regardless of any
+    previously existing .env content.
+    """
+    lines: list[str] = []
+    found = False
+    if os.path.isfile(env_path):
+        with open(env_path, 'r', encoding='utf-8') as fh:
+            for line in fh:
+                if line.startswith(f'{key}=') or line.startswith(f'{key} ='):
+                    lines.append(f'{key}={value}\n')
+                    found = True
+                else:
+                    lines.append(line)
+    if not found:
+        lines.append(f'{key}={value}\n')
+    with open(env_path, 'w', encoding='utf-8') as fh:
+        fh.writelines(lines)
 
 
 def load_api_config() -> None:
@@ -273,6 +317,12 @@ def build_frontend() -> bool:
     if not os.path.isfile(env_dst) and os.path.isfile(env_src):
         shutil.copy(env_src, env_dst)
         logger.info('  [frontend] Copied .env.example → .env')
+
+    # Always enforce the correct API base URL so the built SPA targets the
+    # FastAPI backend via a relative path — this fixes 405 errors caused by
+    # an incorrectly configured VITE_API_BASE_URL (e.g. missing http:// scheme).
+    _ensure_vite_env_var(env_dst, 'VITE_API_BASE_URL', '/api/v1')
+    logger.info('  [frontend] Ensured VITE_API_BASE_URL=/api/v1 in .env')
 
     logger.info('  [frontend] Installing dependencies (npm install)...')
     try:

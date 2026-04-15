@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 from datetime import datetime, timezone
 
@@ -16,6 +17,8 @@ from app.models.research import (
 )
 from app.services.token_manager import TokenManagerService
 
+logger = logging.getLogger('discord_research.replication_engine')
+
 
 class ConversationReplicationEngine:
     def __init__(self) -> None:
@@ -28,7 +31,18 @@ class ConversationReplicationEngine:
         target_guild_id: str,
         turn_count: int,
         context_tag_trigger: str,
+        target_members: list[str] | None = None,
+        tag_probability: float = 0.20,
     ) -> tuple[ReplicationSession, list[dict]]:
+        """Generate a replication session and queue items.
+
+        Args:
+            target_members: Optional list of display names from the target guild.
+                When provided, each message has a ``tag_probability`` chance of
+                mentioning a randomly chosen member.
+            tag_probability: Probability (0–1) that a turn will tag a random
+                member from ``target_members``.
+        """
         patterns = (
             db.query(MessagePattern)
             .filter(MessagePattern.source_guild_id == source_guild_id)
@@ -67,6 +81,11 @@ class ConversationReplicationEngine:
         generated: list[dict] = []
         response_times: list[int] = []
         if mapping is None:
+            logger.warning(
+                'run_session: no enabled channel mapping for %s → %s; session marked failed',
+                source_guild_id,
+                target_guild_id,
+            )
             session.status = 'failed'
             session.session_metrics = {'turn_count': turn_count, 'generated_count': 0, 'reason': 'missing_channel_mapping'}
             db.commit()
@@ -76,6 +95,7 @@ class ConversationReplicationEngine:
         for i in range(turn_count):
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
+                logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
                 break
 
             pattern = random.choice(patterns) if patterns else None
@@ -87,11 +107,19 @@ class ConversationReplicationEngine:
 
             sample = base_sample
             context_aware = False
+
+            # Every 3rd turn (after the first): create a context-aware reply that
+            # mentions the previous speaker so the conversation feels natural.
             if i > 0 and i % 3 == 0 and generated:
                 prev = generated[-1]
                 sample = f"{context_tag_trigger}{prev['account_label']} {base_sample}"
                 context_aware = True
                 self._record_coordination_event(db, session.id, prev['account_label'], token.label, {'turn': i + 1})
+
+            # Occasionally tag a random member of the target server to drive engagement.
+            elif target_members and random.random() < tag_probability:
+                tagged = random.choice(target_members)
+                sample = f'@{tagged} {base_sample}'
 
             queue_item = ReplicationQueueItem(
                 session_id=session.id,
@@ -109,15 +137,14 @@ class ConversationReplicationEngine:
                     'context_aware': context_aware,
                     'response_time_ms': response_time_ms,
                 },
+                # Items start as 'queued'; actual Discord HTTP sends are handled
+                # by the async auto-replication dispatcher (auto_replication.py)
+                # or the /replication/queue/retry-failed endpoint.
                 status='queued',
             )
             db.add(queue_item)
             db.commit()
             db.refresh(queue_item)
-
-            processed_item = self._process_queue_item(db, queue_item)
-            if processed_item.status != 'processed':
-                continue
 
             generated_message = {
                 'turn': i + 1,
@@ -188,17 +215,3 @@ class ConversationReplicationEngine:
             )
         )
         db.commit()
-
-    @staticmethod
-    def _process_queue_item(db: Session, item: ReplicationQueueItem) -> ReplicationQueueItem:
-        item.attempts += 1
-        try:
-            item.status = 'processed'
-            item.processed_at = datetime.now(timezone.utc)
-            item.error = None
-        except Exception as exc:  # pragma: no cover
-            item.status = 'failed'
-            item.error = str(exc)
-        db.commit()
-        db.refresh(item)
-        return item

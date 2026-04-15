@@ -140,6 +140,8 @@ button { cursor: pointer; border: none; font-size: 0.85rem; border-radius: var(-
 .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-secondary { background: var(--bg-input); color: var(--text-primary); padding: 0.55rem 1rem; border: 1px solid var(--border); }
 .btn-secondary:hover { background: #1a4a7a; }
+.btn-danger { background: #7f1d1d; color: #fca5a5; padding: 0.55rem 1rem; font-weight: 500; border: 1px solid #991b1b; }
+.btn-danger:hover { background: #991b1b; }
 .btn-sm { font-size: 0.8rem; padding: 0.4rem 0.75rem; }
 .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); padding: 0.4rem 0.75rem; }
 .btn-outline:hover { border-color: var(--accent-purple); color: var(--accent-purple); }

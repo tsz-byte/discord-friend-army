@@ -23,6 +23,8 @@ type ReplicationConfigSnapshot = { educational_replication_only: boolean; discor
 type DashboardStats = { active_accounts: number; healthy_accounts: number; total_proxies: number; healthy_proxies: number; active_syncs: number; messages_transferred: number; ai_requests_total: number; uptime_seconds: number }
 type ProxyRecord = { id: number; host: string; port: number; username: string; is_healthy: boolean; last_used: string | null; success_rate: number }
 type ProxyHealth = { total: number; healthy: number; unhealthy: number; proxies: ProxyRecord[] }
+type AppSetting = { key: string; value: string | null }
+type AutoLoopStatus = { enabled: boolean; interval_seconds: number; task_alive: boolean }
 
 type Tab = 'overview' | 'accounts' | 'proxies' | 'servers' | 'ai' | 'sync' | 'activity' | 'settings'
 
@@ -83,6 +85,12 @@ function App() {
   const [aiLoading, setAiLoading] = useState(false)
   const [logFilter, setLogFilter] = useState('')
 
+  // Settings state
+  const [appSettings, setAppSettings] = useState<AppSetting[]>([])
+  const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({})
+  const [autoLoopStatus, setAutoLoopStatus] = useState<AutoLoopStatus | null>(null)
+  const [autoLoopInterval, setAutoLoopInterval] = useState(180)
+
   const trendSvgRef = useRef<SVGSVGElement | null>(null)
   const flowSvgRef = useRef<SVGSVGElement | null>(null)
 
@@ -131,16 +139,51 @@ function App() {
     if (proxyRes.ok) setProxyHealth((await proxyRes.json()) as ProxyHealth)
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const [settingsRes, loopRes] = await Promise.all([
+        fetch(`${API_BASE}/settings/all`),
+        fetch(`${API_BASE}/replication/auto-loop/status`),
+      ])
+      if (settingsRes.ok) {
+        const rows = (await settingsRes.json()) as AppSetting[]
+        setAppSettings(rows)
+        // Seed draft with current stored values so the form shows them.
+        const draft: Record<string, string> = {}
+        for (const row of rows) { if (row.value != null) draft[row.key] = row.value }
+        setSettingsDraft(prev => ({ ...draft, ...prev }))
+      }
+      if (loopRes.ok) setAutoLoopStatus((await loopRes.json()) as AutoLoopStatus)
+    } catch { /* non-fatal */ }
+  }, [])
+
   const loadAll = useCallback(async () => {
     setError('')
     try {
-      await Promise.all([loadAnalytics(), loadReplicationData(), loadDashboard()])
+      await Promise.all([loadAnalytics(), loadReplicationData(), loadDashboard(), loadSettings()])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error while loading data')
     }
-  }, [loadAnalytics, loadReplicationData, loadDashboard])
+  }, [loadAnalytics, loadReplicationData, loadDashboard, loadSettings])
 
   useEffect(() => { void loadAll() }, [loadAll])
+
+  // Auto-refresh: keep status + activity logs current without a manual reload.
+  useEffect(() => {
+    const id = setInterval(() => {
+      void loadDashboard()
+      void loadSettings()
+      fetch(`${API_BASE}/replication/logs?limit=80`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setActivityLogs(d as ActivityLog[]) })
+        .catch(() => {})
+      fetch(`${API_BASE}/replication/status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setSystemStatus(d as SystemStatus) })
+        .catch(() => {})
+    }, 30_000)
+    return () => clearInterval(id)
+  }, [loadDashboard, loadSettings])
 
   /* ---------- D3 charts ---------- */
   useEffect(() => {
@@ -254,8 +297,12 @@ function App() {
     setError('')
     try {
       const res = await fetch(`${API_BASE}/accounts/load-file`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to load tokens from t.txt')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ errors: [`HTTP ${res.status}`] })) as { errors: string[] }
+        throw new Error(`Failed to load tokens from t.txt: ${(body.errors ?? []).join('; ') || res.statusText}`)
+      }
       const data = await res.json() as { loaded: number; errors: string[] }
+      if (data.errors?.length) setError(`Loaded ${data.loaded} token(s) with ${data.errors.length} error(s): ${data.errors.slice(0, 3).join('; ')}`)
       await loadReplicationData()
       flash(`Loaded ${data.loaded} token(s) from t.txt`)
     } catch (err) { setError(err instanceof Error ? err.message : 'Load error') }
@@ -265,8 +312,12 @@ function App() {
     setError('')
     try {
       const res = await fetch(`${API_BASE}/proxies/load-file`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to load proxies from p.txt')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ errors: [`HTTP ${res.status}`] })) as { errors: string[] }
+        throw new Error(`Failed to load proxies from p.txt: ${(body.errors ?? []).join('; ') || res.statusText}`)
+      }
       const data = await res.json() as { loaded: number; errors: string[] }
+      if (data.errors?.length) setError(`Loaded ${data.loaded} prox(ies) with ${data.errors.length} error(s): ${data.errors.slice(0, 3).join('; ')}`)
       await Promise.all([loadReplicationData(), loadDashboard()])
       flash(`Loaded ${data.loaded} proxy/proxies from p.txt`)
     } catch (err) { setError(err instanceof Error ? err.message : 'Load error') }
@@ -276,9 +327,51 @@ function App() {
     setError('')
     try {
       const res = await fetch(`${API_BASE}/config/load-file`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to load api_key.conf')
-      flash('API config loaded from api_key.conf')
+      if (!res.ok) throw new Error(`Failed to load api_key.conf (HTTP ${res.status})`)
+      const data = await res.json() as { keys: string[]; applied: string[] }
+      flash(`API config loaded — applied: ${data.applied?.join(', ') || 'none'}`)
     } catch (err) { setError(err instanceof Error ? err.message : 'Load error') }
+  }
+
+  const saveSettings = async () => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/settings/bulk-update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: settingsDraft }),
+      })
+      if (!res.ok) throw new Error(`Failed to save settings (HTTP ${res.status})`)
+      await loadSettings()
+      flash('Settings saved successfully')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Save error') }
+  }
+
+  const toggleAutoLoop = async () => {
+    setError('')
+    try {
+      const isRunning = autoLoopStatus?.enabled && autoLoopStatus?.task_alive
+      const endpoint = isRunning ? 'stop' : 'start'
+      const url = endpoint === 'start'
+        ? `${API_BASE}/replication/auto-loop/start?interval_seconds=${autoLoopInterval}`
+        : `${API_BASE}/replication/auto-loop/stop`
+      const res = await fetch(url, { method: 'POST' })
+      if (!res.ok) throw new Error(`Auto-loop ${endpoint} failed (HTTP ${res.status})`)
+      const data = await res.json() as AutoLoopStatus
+      setAutoLoopStatus(data)
+      flash(`Auto-loop ${data.enabled ? 'started' : 'stopped'}`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Auto-loop error') }
+  }
+
+  const retryFailedQueue = async () => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/replication/queue/retry-failed`, { method: 'POST' })
+      if (!res.ok) throw new Error(`Retry failed (HTTP ${res.status})`)
+      const data = await res.json() as { requeued: number }
+      await loadReplicationData()
+      flash(`Re-queued ${data.requeued} failed item(s)`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Retry error') }
   }
 
   const sendAiMessage = async () => {
@@ -675,6 +768,9 @@ function App() {
 
             <section className="panel">
               <h3>📦 Queue ({queueItems.length})</h3>
+              <div className="btn-row" style={{ marginBottom: 10 }}>
+                <button className="btn-secondary" onClick={() => void retryFailedQueue()}>🔄 Retry Failed Items</button>
+              </div>
               <div className="queue-list">
                 {queueItems.slice(0, 10).map((item) => (
                   <div key={item.id} className="queue-card">
@@ -682,6 +778,7 @@ function App() {
                     <span>{item.source_channel_id} → {item.target_channel_id}</span>
                     <span className={`status-badge ${item.status}`}>{item.status}</span>
                     <span>attempts: {item.attempts}</span>
+                    {item.error && <span style={{ color: '#f87171', fontSize: 11 }}>{item.error}</span>}
                   </div>
                 ))}
                 {!queueItems.length && <p className="empty-text">No queue activity yet.</p>}
@@ -715,17 +812,91 @@ function App() {
         {/* ===== SETTINGS TAB ===== */}
         {activeTab === 'settings' && (
           <div className="tab-content">
+            {/* Auto-loop control */}
             <section className="panel">
-              <h3>⚙️ Configuration Snapshot</h3>
+              <h3>🤖 Auto-Replication Loop</h3>
+              <p style={{ color: '#9ca3af', marginBottom: 12, fontSize: 13 }}>
+                When enabled, the backend automatically runs replication sessions and dispatches messages to Discord every N seconds.
+              </p>
+              <div className="form-row" style={{ alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 600 }}>Status:</span>
+                  <span style={{
+                    padding: '2px 10px', borderRadius: 12, fontSize: 13, fontWeight: 700,
+                    background: autoLoopStatus?.enabled && autoLoopStatus?.task_alive ? '#16a34a22' : '#dc262622',
+                    color: autoLoopStatus?.enabled && autoLoopStatus?.task_alive ? '#4ade80' : '#f87171',
+                  }}>
+                    {autoLoopStatus?.enabled && autoLoopStatus?.task_alive ? '● Running' : '○ Stopped'}
+                  </span>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  Interval (s):
+                  <input
+                    type="number" min={30} max={3600} value={autoLoopInterval}
+                    onChange={e => setAutoLoopInterval(Number(e.target.value))}
+                    style={{ width: 80 }}
+                    disabled={autoLoopStatus?.enabled && autoLoopStatus?.task_alive}
+                  />
+                </label>
+                <button
+                  className={autoLoopStatus?.enabled && autoLoopStatus?.task_alive ? 'btn-danger' : 'btn-primary'}
+                  onClick={() => void toggleAutoLoop()}
+                >
+                  {autoLoopStatus?.enabled && autoLoopStatus?.task_alive ? '⏹ Stop Loop' : '▶ Start Loop'}
+                </button>
+              </div>
+            </section>
+
+            {/* Editable runtime settings */}
+            <section className="panel">
+              <h3>⚙️ Runtime Settings</h3>
+              <p style={{ color: '#9ca3af', marginBottom: 12, fontSize: 13 }}>
+                Changes are persisted to the database and take effect immediately (no restart required).
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px', marginBottom: 16 }}>
+                {[
+                  { key: 'openrouter_api_key', label: 'OpenRouter API Key', placeholder: 'sk-or-...', type: 'password' },
+                  { key: 'openrouter_model', label: 'OpenRouter Model', placeholder: 'x-ai/grok-4.1-fast', type: 'text' },
+                  { key: 'discord_requests_per_minute', label: 'Discord RPM Limit', placeholder: '45', type: 'number' },
+                  { key: 'analytics_cache_ttl_seconds', label: 'Cache TTL (seconds)', placeholder: '300', type: 'number' },
+                  { key: 'tag_probability', label: 'Tag Probability (0–1)', placeholder: '0.20', type: 'number' },
+                  { key: 'auto_loop_interval_seconds', label: 'Auto-loop Interval (s)', placeholder: '180', type: 'number' },
+                ].map(({ key, label, placeholder, type }) => (
+                  <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                    <span style={{ fontWeight: 600 }}>{label}</span>
+                    <input
+                      type={type}
+                      placeholder={placeholder}
+                      value={settingsDraft[key] ?? ''}
+                      onChange={e => setSettingsDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="btn-row">
+                <button className="btn-primary" onClick={() => void saveSettings()}>💾 Save Settings</button>
+              </div>
+            </section>
+
+            {/* Configuration snapshot (read-only) */}
+            <section className="panel">
+              <h3>📋 Active Configuration Snapshot</h3>
               <div className="config-list">
                 <div className="config-row"><span>Educational-only mode</span><strong>{configSnapshot?.educational_replication_only ? '✅ Enabled' : '❌ Disabled'}</strong></div>
                 <div className="config-row"><span>Discord API base URL</span><strong>{configSnapshot?.discord_api_base_url ?? '-'}</strong></div>
                 <div className="config-row"><span>Discord RPM limit</span><strong>{configSnapshot?.discord_requests_per_minute ?? 0}</strong></div>
                 <div className="config-row"><span>Cache TTL (seconds)</span><strong>{configSnapshot?.analytics_cache_ttl_seconds ?? 0}</strong></div>
                 <div className="config-row"><span>OpenRouter model</span><strong>{configSnapshot?.openrouter_model ?? 'x-ai/grok-4.1-fast'}</strong></div>
+                {appSettings.map(s => (
+                  <div key={s.key} className="config-row">
+                    <span>{s.key}</span>
+                    <strong style={{ fontFamily: 'monospace', fontSize: 12 }}>{s.value ?? '(not set)'}</strong>
+                  </div>
+                ))}
               </div>
             </section>
 
+            {/* Credential reload */}
             <section className="panel">
               <h3>📁 Reload Credentials</h3>
               <div className="btn-row">
