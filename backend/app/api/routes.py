@@ -849,6 +849,51 @@ def update_settings(request: SettingsUpdateRequest):
     return {'status': 'acknowledged', 'key': request.key, 'note': 'Runtime setting updates require restart for full effect'}
 
 
+@router.post('/replication/servers/join-with-onboarding')
+async def join_server_with_onboarding(
+    guild_id: str = Query(..., description='Discord guild (server) ID'),
+    invite_code: str = Query(..., description='Invite code or full invite URL'),
+    db: Session = Depends(get_db),
+):
+    """Join a Discord server with every active token, auto-completing onboarding.
+
+    Onboarding prompts are answered automatically (first available option per
+    prompt) so tokens are immediately able to send messages even when the server
+    has Discord's onboarding gate enabled.
+    """
+    tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).all()
+    if not tokens:
+        raise HTTPException(status_code=400, detail='No active tokens available to join the server')
+
+    results = []
+    for token_row in tokens:
+        proxy_url: str | None = None
+        if token_row.proxy_host and token_row.proxy_port:
+            proxy_url = token_manager.build_proxy_url(
+                host=token_row.proxy_host,
+                port=token_row.proxy_port,
+                username=token_row.proxy_username or '',
+                password=token_row.proxy_password or '',
+            )
+        result = await discord_client.join_guild_via_invite(
+            invite_code=invite_code,
+            token=token_row.token_value,
+            proxy_url=proxy_url,
+        )
+        results.append({'token_id': token_row.id, 'label': token_row.label, **result})
+        log_event(
+            'server_join_attempted',
+            {
+                'guild_id': guild_id,
+                'token_id': token_row.id,
+                'label': token_row.label,
+                'result_status': result.get('status'),
+            },
+        )
+
+    return {'guild_id': guild_id, 'invite_code': invite_code, 'results': results}
+
+
 @router.get('/compliance/methodology', response_model=ComplianceMethodology)
 def compliance_methodology() -> ComplianceMethodology:
     return ComplianceMethodology(

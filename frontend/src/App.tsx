@@ -57,12 +57,12 @@ function App() {
   const [tokens, setTokens] = useState<TokenRecord[]>([])
 
   const [sourceGuildId, setSourceGuildId] = useState(DEFAULT_GUILD)
-  const [targetGuildId, setTargetGuildId] = useState('target-guild')
+  const [targetGuildId, setTargetGuildId] = useState('1425152532807684167')
   const [connections, setConnections] = useState<ServerConnection[]>([])
   const [inviteLink, setInviteLink] = useState('')
 
-  const [sourceChannelId, setSourceChannelId] = useState('source-channel')
-  const [targetChannelId, setTargetChannelId] = useState('target-channel')
+  const [sourceChannelId, setSourceChannelId] = useState('851143244779487302')
+  const [targetChannelId, setTargetChannelId] = useState('1459350794649342185')
   const [mappings, setMappings] = useState<ChannelMapping[]>([])
 
   const [turnCount, setTurnCount] = useState(8)
@@ -302,6 +302,26 @@ function App() {
     flash('Invite link copied to clipboard!')
   }
 
+  const joinWithOnboarding = async (guildId: string, invite: string) => {
+    if (!invite) { setError('Enter an invite link first'); return }
+    setError('')
+    try {
+      const code = invite.trim().replace(/\/$/, '').split('/').pop() ?? invite
+      const res = await fetch(
+        `${API_BASE}/replication/servers/join-with-onboarding?guild_id=${encodeURIComponent(guildId)}&invite_code=${encodeURIComponent(code)}`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))
+      }
+      const data = await res.json() as { results: Array<{ label: string; status: string }> }
+      const summary = data.results.map(r => `${r.label}: ${r.status}`).join(', ')
+      await loadReplicationData()
+      flash(`Join results — ${summary}`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Join error') }
+  }
+
   const topTopics = useMemo(() => overview?.top_topics ?? [], [overview])
   const filteredLogs = useMemo(() => {
     if (!logFilter) return activityLogs
@@ -505,6 +525,37 @@ function App() {
               <div className="invite-row">
                 <input placeholder="Paste invite link here" value={inviteLink} onChange={(e) => setInviteLink(e.target.value)} />
                 <button className="btn-secondary" onClick={copyInviteLink}>📋 Copy Link</button>
+              </div>
+            </section>
+
+            <section className="panel">
+              <h3>🚪 Join Servers (with Onboarding Auto-Complete)</h3>
+              <p className="panel-desc" style={{ marginBottom: 12, color: '#9ca3af', fontSize: 13 }}>
+                Sends all active account tokens to join a server via invite. If the server has Discord Onboarding enabled,
+                each token will automatically complete the onboarding prompts so it can send messages right away.
+              </p>
+              <div className="form-grid-2col">
+                <div className="form-group">
+                  <label>Base / Source Server</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input readOnly value="https://discord.gg/ttzewo" style={{ flex: 1 }} />
+                    <button className="btn-secondary" onClick={() => void joinWithOnboarding(sourceGuildId, 'https://discord.gg/ttzewo')}>Join All Tokens</button>
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label>Target Server</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input readOnly value="https://discord.gg/asTTvgMe" style={{ flex: 1 }} />
+                    <button className="btn-secondary" onClick={() => void joinWithOnboarding(targetGuildId, 'https://discord.gg/asTTvgMe')}>Join All Tokens</button>
+                  </div>
+                </div>
+                <div className="form-group full-width">
+                  <label>Custom Invite (for any other server)</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input placeholder="https://discord.gg/…" value={inviteLink} onChange={(e) => setInviteLink(e.target.value)} style={{ flex: 1 }} />
+                    <button className="btn-primary" onClick={() => void joinWithOnboarding(sourceGuildId, inviteLink)}>Join All Tokens</button>
+                  </div>
+                </div>
               </div>
             </section>
 

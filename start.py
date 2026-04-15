@@ -2,10 +2,13 @@
 """Discord Friend Army - Unified Startup Script
 
 Loads t.txt (tokens), p.txt (proxies), and api_key.conf (OpenRouter config),
-initializes the database, and starts the FastAPI server.
+seeds the default base/target server connections, builds the frontend, and
+starts the FastAPI server on 127.0.0.1:8007.
 """
 
 import os
+import shutil
+import subprocess
 import sys
 import logging
 import traceback
@@ -13,7 +16,25 @@ import traceback
 # Ensure backend package is importable
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(ROOT_DIR, 'backend')
+FRONTEND_DIR = os.path.join(ROOT_DIR, 'frontend')
 sys.path.insert(0, BACKEND_DIR)
+
+HOST = '127.0.0.1'
+PORT = 8007
+
+# ---------------------------------------------------------------------------
+# Base (copy/mimic) server — conversations are replicated FROM here
+# ---------------------------------------------------------------------------
+BASE_GUILD_ID = '751274186189701190'
+BASE_GUILD_INVITE = 'https://discord.gg/ttzewo'
+BASE_CHANNEL_ID = '851143244779487302'
+
+# ---------------------------------------------------------------------------
+# Target server — tokens send messages TO here
+# ---------------------------------------------------------------------------
+TARGET_GUILD_ID = '1425152532807684167'
+TARGET_GUILD_INVITE = 'https://discord.gg/asTTvgMe'
+TARGET_CHANNEL_ID = '1459350794649342185'
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -104,6 +125,11 @@ def load_credentials() -> tuple[int, int]:
                 logger.info(f'  [p.txt] Loaded {loaded} {"proxy" if loaded == 1 else "proxies"}')
                 for err in errors:
                     logger.error(f'  [p.txt] ERROR: {err}')
+                if proxies_loaded == 0 and not errors:
+                    logger.warning(
+                        '  [p.txt] File exists but contains no proxy entries. '
+                        'Add lines in format: host:port:username:password'
+                    )
             except Exception as exc:
                 logger.error(f'  [p.txt] Failed to load proxies: {exc}')
                 logger.debug(traceback.format_exc())
@@ -113,6 +139,172 @@ def load_credentials() -> tuple[int, int]:
         db.close()
 
     return tokens_loaded, proxies_loaded
+
+
+def seed_default_servers() -> None:
+    """Ensure the base and target server connections and channel mapping exist."""
+    try:
+        from app.db.session import SessionLocal
+        from app.models.research import (
+            ChannelMapping,
+            GuildOptIn,
+            ServerConnection,
+        )
+
+        db = SessionLocal()
+        try:
+            # ---- Base (source/mimic) server ----
+            opt_in = (
+                db.query(GuildOptIn)
+                .filter(GuildOptIn.guild_id == BASE_GUILD_ID)
+                .first()
+            )
+            if opt_in is None:
+                opt_in = GuildOptIn(
+                    guild_id=BASE_GUILD_ID,
+                    guild_name='Base Mimic Server',
+                    opted_in=True,
+                    methodology_version='2026.04',
+                )
+                db.add(opt_in)
+                db.commit()
+                logger.info('  [seed] GuildOptIn created for base server %s', BASE_GUILD_ID)
+
+            src = (
+                db.query(ServerConnection)
+                .filter(
+                    ServerConnection.guild_id == BASE_GUILD_ID,
+                    ServerConnection.role == 'source',
+                )
+                .first()
+            )
+            if src is None:
+                src = ServerConnection(
+                    guild_id=BASE_GUILD_ID,
+                    guild_name='Base Mimic Server',
+                    role='source',
+                    invite_link=BASE_GUILD_INVITE,
+                    enabled=True,
+                    joined_status='pending',
+                    research_scope='full',
+                )
+                db.add(src)
+                db.commit()
+                logger.info(
+                    '  [seed] Source server connection created: %s (%s)',
+                    BASE_GUILD_ID,
+                    BASE_GUILD_INVITE,
+                )
+
+            # ---- Target server ----
+            tgt = (
+                db.query(ServerConnection)
+                .filter(
+                    ServerConnection.guild_id == TARGET_GUILD_ID,
+                    ServerConnection.role == 'target',
+                )
+                .first()
+            )
+            if tgt is None:
+                tgt = ServerConnection(
+                    guild_id=TARGET_GUILD_ID,
+                    guild_name='Target Server',
+                    role='target',
+                    invite_link=TARGET_GUILD_INVITE,
+                    enabled=True,
+                    joined_status='pending',
+                    research_scope='full',
+                )
+                db.add(tgt)
+                db.commit()
+                logger.info(
+                    '  [seed] Target server connection created: %s (%s)',
+                    TARGET_GUILD_ID,
+                    TARGET_GUILD_INVITE,
+                )
+
+            # ---- Channel mapping ----
+            mapping = (
+                db.query(ChannelMapping)
+                .filter(
+                    ChannelMapping.source_guild_id == BASE_GUILD_ID,
+                    ChannelMapping.source_channel_id == BASE_CHANNEL_ID,
+                    ChannelMapping.target_guild_id == TARGET_GUILD_ID,
+                    ChannelMapping.target_channel_id == TARGET_CHANNEL_ID,
+                )
+                .first()
+            )
+            if mapping is None:
+                mapping = ChannelMapping(
+                    source_guild_id=BASE_GUILD_ID,
+                    source_channel_id=BASE_CHANNEL_ID,
+                    target_guild_id=TARGET_GUILD_ID,
+                    target_channel_id=TARGET_CHANNEL_ID,
+                    enabled=True,
+                    filters={},
+                    settings={},
+                )
+                db.add(mapping)
+                db.commit()
+                logger.info(
+                    '  [seed] Channel mapping created: %s -> %s',
+                    BASE_CHANNEL_ID,
+                    TARGET_CHANNEL_ID,
+                )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.error(f'  [seed] Failed to seed default servers: {exc}')
+        logger.debug(traceback.format_exc())
+
+
+def build_frontend() -> bool:
+    """Build the React frontend into backend/static. Returns True on success."""
+    npm = shutil.which('npm')
+    if npm is None:
+        logger.warning(
+            '  [frontend] npm not found — skipping frontend build. '
+            'Install Node.js and re-run start.py for the dashboard.'
+        )
+        return False
+
+    env_src = os.path.join(FRONTEND_DIR, '.env.example')
+    env_dst = os.path.join(FRONTEND_DIR, '.env')
+    if not os.path.isfile(env_dst) and os.path.isfile(env_src):
+        shutil.copy(env_src, env_dst)
+        logger.info('  [frontend] Copied .env.example → .env')
+
+    logger.info('  [frontend] Installing dependencies (npm install)...')
+    try:
+        subprocess.run(
+            [npm, 'install', '--prefer-offline'],
+            cwd=FRONTEND_DIR,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.error('  [frontend] npm install failed: %s', exc.stderr.decode(errors='replace')[:400])
+        return False
+
+    logger.info('  [frontend] Building frontend (npm run build)...')
+    try:
+        result = subprocess.run(
+            [npm, 'run', 'build'],
+            cwd=FRONTEND_DIR,
+            check=True,
+            capture_output=True,
+        )
+        logger.info('  [frontend] Build succeeded.')
+        if result.stdout:
+            for line in result.stdout.decode(errors='replace').splitlines():
+                logger.debug('  [frontend] %s', line)
+        return True
+    except subprocess.CalledProcessError as exc:
+        logger.error(
+            '  [frontend] npm run build failed:\n%s',
+            exc.stderr.decode(errors='replace')[:800],
+        )
+        return False
 
 
 def show_server_connections() -> None:
@@ -130,7 +322,10 @@ def show_server_connections() -> None:
                 return
             for conn in connections:
                 invite = conn.invite_link or '(no invite link set)'
-                logger.info(f'  [{conn.role.upper()}] {conn.guild_name} (ID: {conn.guild_id}) — invite: {invite} — status: {conn.joined_status}')
+                logger.info(
+                    f'  [{conn.role.upper()}] {conn.guild_name} '
+                    f'(ID: {conn.guild_id}) — invite: {invite} — status: {conn.joined_status}'
+                )
         finally:
             db.close()
     except Exception as exc:
@@ -147,29 +342,39 @@ def main() -> None:
     logger.info('Step 2: Loading credentials (tokens + proxies)...')
     tokens_loaded, proxies_loaded = load_credentials()
 
-    logger.info('Step 3: Checking server connections...')
+    logger.info('Step 3: Seeding default server connections...')
+    seed_default_servers()
+
+    logger.info('Step 4: Checking server connections...')
     show_server_connections()
 
-    logger.info('Step 4: Starting web server...')
+    logger.info('Step 5: Building frontend...')
+    frontend_built = build_frontend()
+
+    logger.info('Step 6: Starting web server...')
     print()
     print('-' * 60)
-    print(f'  Tokens loaded:  {tokens_loaded}')
-    print(f'  Proxies loaded: {proxies_loaded}')
-    print(f'  Dashboard:      http://localhost:8000')
-    print(f'  API docs:       http://localhost:8000/docs')
+    print(f'  Tokens loaded:   {tokens_loaded}')
+    print(f'  Proxies loaded:  {proxies_loaded}')
+    print(f'  Frontend built:  {"yes" if frontend_built else "no (npm missing or build failed)"}')
+    print(f'  Dashboard:       http://{HOST}:{PORT}')
+    print(f'  API docs:        http://{HOST}:{PORT}/docs')
     print('-' * 60)
     print()
 
     if tokens_loaded == 0:
         logger.warning('No tokens loaded. Add tokens to t.txt (one per line) and restart.')
     if proxies_loaded == 0:
-        logger.warning('No proxies loaded. Add proxies to p.txt and restart (optional).')
+        logger.warning(
+            'No proxies loaded. '
+            'Add proxies to p.txt (format: host:port:username:password) and restart (optional).'
+        )
 
     import uvicorn
     uvicorn.run(
         'app.main:app',
-        host='0.0.0.0',
-        port=8000,
+        host=HOST,
+        port=PORT,
         reload=False,
         log_level='info',
     )

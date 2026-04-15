@@ -1,6 +1,10 @@
+import logging
+
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger('discord_research.discord_client')
 
 
 class DiscordClient:
@@ -20,3 +24,149 @@ class DiscordClient:
                 return response.json()
             except httpx.HTTPError:
                 return {'id': guild_id, 'name': 'Unknown (discord api unavailable)'}
+
+    async def get_guild_onboarding(self, guild_id: str, token: str) -> dict:
+        """Return the onboarding config for a guild, using a user token."""
+        headers = {'Authorization': token}
+        async with httpx.AsyncClient(timeout=20) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/guilds/{guild_id}/onboarding',
+                    headers=headers,
+                )
+                if response.status_code == 200:
+                    return response.json()
+            except httpx.HTTPError as exc:
+                logger.debug('get_guild_onboarding error guild=%s: %s', guild_id, exc)
+        return {'enabled': False, 'prompts': [], 'default_channel_ids': []}
+
+    async def complete_onboarding(
+        self,
+        guild_id: str,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> bool:
+        """Auto-complete server onboarding for a user token.
+
+        Selects the first available option for every prompt so the account is
+        no longer gated from sending messages.  Returns True if onboarding was
+        completed (or was not required), False on unexpected errors.
+        """
+        onboarding = await self.get_guild_onboarding(guild_id, token)
+        if not onboarding.get('enabled'):
+            return True  # nothing to do
+
+        prompts = onboarding.get('prompts', [])
+        if not prompts:
+            return True
+
+        onboarding_responses: dict[str, list[str]] = {}
+        seen_prompts: list[str] = []
+        seen_responses: list[str] = []
+
+        for prompt in prompts:
+            prompt_id = str(prompt.get('id', ''))
+            options = prompt.get('options', [])
+            if not prompt_id or not options:
+                continue
+            # Pick the first available option for each prompt; if multiple
+            # selections are allowed we still pick just one to satisfy
+            # "required" prompts without overfitting.
+            selected_id = str(options[0]['id'])
+            onboarding_responses[prompt_id] = [selected_id]
+            seen_prompts.append(prompt_id)
+            seen_responses.append(selected_id)
+
+        payload = {
+            'onboarding_responses': onboarding_responses,
+            'onboarding_prompts_seen': seen_prompts,
+            'onboarding_responses_seen': seen_responses,
+        }
+        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.post(
+                    f'{self.base_url}/guilds/{guild_id}/complete-onboarding',
+                    headers=headers,
+                    json=payload,
+                )
+                if resp.status_code in (200, 201, 204):
+                    logger.info('Onboarding completed for guild %s', guild_id)
+                    return True
+                logger.warning(
+                    'complete_onboarding guild=%s status=%s body=%s',
+                    guild_id,
+                    resp.status_code,
+                    resp.text[:200],
+                )
+            except httpx.HTTPError as exc:
+                logger.warning('complete_onboarding HTTP error guild=%s: %s', guild_id, exc)
+        return False
+
+    async def join_guild_via_invite(
+        self,
+        invite_code: str,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> dict:
+        """Join a guild via invite code with a user token.
+
+        After a successful join the method automatically completes server
+        onboarding so the account is immediately able to send messages even if
+        the server uses Discord's onboarding gate.
+        """
+        # Strip full URL down to just the code if needed.
+        code = invite_code.strip().rstrip('/')
+        if '/' in code:
+            code = code.rsplit('/', 1)[-1]
+
+        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
+            try:
+                resp = await client.post(
+                    f'{self.base_url}/invites/{code}',
+                    headers=headers,
+                    json={},
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    guild_info = data.get('guild') or {}
+                    guild_id = guild_info.get('id') or data.get('guild_id', '')
+                    if guild_id:
+                        onboarding_ok = await self.complete_onboarding(guild_id, token, proxy_url)
+                        logger.info(
+                            'Joined guild %s (onboarding_ok=%s)', guild_id, onboarding_ok
+                        )
+                    return {'status': 'joined', 'guild': guild_info}
+                if resp.status_code == 204:
+                    return {'status': 'already_joined'}
+                return {
+                    'status': 'failed',
+                    'code': resp.status_code,
+                    'detail': resp.text[:200],
+                }
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> dict:
+        """Send a message to a Discord channel using a user token."""
+        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.post(
+                    f'{self.base_url}/channels/{channel_id}/messages',
+                    headers=headers,
+                    json={'content': content},
+                )
+                if resp.status_code in (200, 201):
+                    return {'status': 'sent', 'message': resp.json()}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
