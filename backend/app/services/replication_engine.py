@@ -54,7 +54,10 @@ class ConversationReplicationEngine:
             target_guild_id=target_guild_id,
             mode='educational_controlled',
             status='running',
-            account_plan=[{'id': t.id, 'label': t.label} for t in account_pool],
+            account_plan=[
+                {'id': t.id, 'label': t.label, 'proxy_host': t.proxy_host, 'proxy_port': t.proxy_port}
+                for t in account_pool
+            ],
             session_metrics={'turn_count': turn_count, 'generated_count': 0, 'fidelity_score': 0.0},
         )
         db.add(session)

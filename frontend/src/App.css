@@ -20,7 +20,8 @@
 }
 
 .controls input,
-.form-grid input {
+.form-grid input,
+.form-grid select {
   min-width: 220px;
   padding: 0.45rem;
 }

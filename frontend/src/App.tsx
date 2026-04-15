@@ -10,13 +10,31 @@ type FlowEdge = { source: string; target: string }
 type GraphNode = d3.SimulationNodeDatum & { id: string }
 type GraphLink = d3.SimulationLinkDatum<GraphNode> & { source: GraphNode | string; target: GraphNode | string }
 
-type TokenRecord = { id: number; label: string; token_preview: string; is_active: boolean; health_status: string; rotation_priority: number; usage_count: number }
+type TokenRecord = {
+  id: number
+  label: string
+  token_preview: string
+  source_identity?: string | null
+  proxy_preview?: string | null
+  is_active: boolean
+  health_status: string
+  rotation_priority: number
+  usage_count: number
+}
 type ServerConnection = { id: number; guild_id: string; guild_name: string; role: string; enabled: boolean; joined_status: string; research_scope: string }
 type ChannelMapping = { id: number; source_guild_id: string; source_channel_id: string; target_guild_id: string; target_channel_id: string; enabled: boolean; filters: Record<string, unknown>; settings: Record<string, unknown> }
 type ReplicationRun = { session_id: number; status: string; generated_messages: Array<{ turn: number; account_label: string; content: string; context_aware: boolean; response_time_ms: number }> }
 type QueueItem = { id: number; session_id: number; source_channel_id: string; target_channel_id: string; status: string; attempts: number; error?: string | null }
 type MirrorItem = { id: number; session_id: number; source_channel_id: string; target_channel_id: string; source_content: string; replicated_content: string; source_author_hash: string; responder_account_label: string; response_time_ms: number }
 type SystemStatus = { active_tokens: number; healthy_tokens: number; source_connections: number; target_connections: number; enabled_channel_mappings: number; queue_pending: number; queue_failed: number; sessions_completed: number }
+type ActivityLog = { timestamp: string; event_type: string; details: Record<string, unknown> }
+type ReplicationConfigSnapshot = {
+  educational_replication_only: boolean
+  discord_api_base_url: string
+  discord_requests_per_minute: number
+  analytics_cache_ttl_seconds: number
+  openrouter_model: string
+}
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const DEFAULT_GUILD = import.meta.env.VITE_DEFAULT_GUILD_ID ?? 'demo-guild'
@@ -30,6 +48,7 @@ function App() {
 
   const [tokenLabel, setTokenLabel] = useState('research-account-1')
   const [tokenValue, setTokenValue] = useState('')
+  const [tokenProxy, setTokenProxy] = useState('')
   const [tokenPriority, setTokenPriority] = useState(100)
   const [tokens, setTokens] = useState<TokenRecord[]>([])
 
@@ -42,10 +61,17 @@ function App() {
   const [mappings, setMappings] = useState<ChannelMapping[]>([])
 
   const [turnCount, setTurnCount] = useState(8)
+  const [contextTagTrigger, setContextTagTrigger] = useState('@')
+  const [patternMinMessages, setPatternMinMessages] = useState(2)
+  const [patternMaxPatterns, setPatternMaxPatterns] = useState(40)
+  const [mappingPace, setMappingPace] = useState('adaptive')
+  const [includeThreads, setIncludeThreads] = useState(true)
   const [replicationRun, setReplicationRun] = useState<ReplicationRun | null>(null)
   const [queueItems, setQueueItems] = useState<QueueItem[]>([])
   const [mirrorEvents, setMirrorEvents] = useState<MirrorItem[]>([])
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([])
+  const [configSnapshot, setConfigSnapshot] = useState<ReplicationConfigSnapshot | null>(null)
   const [error, setError] = useState('')
 
   const trendSvgRef = useRef<SVGSVGElement | null>(null)
@@ -66,13 +92,15 @@ function App() {
   }, [guildId])
 
   const loadReplicationData = useCallback(async () => {
-    const [tokenRes, serverRes, mappingRes, queueRes, mirrorRes, statusRes] = await Promise.all([
+    const [tokenRes, serverRes, mappingRes, queueRes, mirrorRes, statusRes, logsRes, configRes] = await Promise.all([
       fetch(`${API_BASE}/replication/tokens`),
       fetch(`${API_BASE}/replication/servers`),
       fetch(`${API_BASE}/replication/channel-mappings`),
       fetch(`${API_BASE}/replication/control/queue`),
       fetch(`${API_BASE}/replication/control/conversations`),
       fetch(`${API_BASE}/replication/status`),
+      fetch(`${API_BASE}/replication/logs?limit=80`),
+      fetch(`${API_BASE}/replication/config`),
     ])
 
     if (tokenRes.ok) setTokens((await tokenRes.json()) as TokenRecord[])
@@ -81,6 +109,8 @@ function App() {
     if (queueRes.ok) setQueueItems((await queueRes.json()) as QueueItem[])
     if (mirrorRes.ok) setMirrorEvents((await mirrorRes.json()) as MirrorItem[])
     if (statusRes.ok) setSystemStatus((await statusRes.json()) as SystemStatus)
+    if (logsRes.ok) setActivityLogs((await logsRes.json()) as ActivityLog[])
+    if (configRes.ok) setConfigSnapshot((await configRes.json()) as ReplicationConfigSnapshot)
   }, [])
 
   const loadAll = useCallback(async () => {
@@ -149,9 +179,10 @@ function App() {
   const submitToken = async () => {
     setError('')
     try {
-      const response = await fetch(`${API_BASE}/replication/tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: tokenLabel, token_value: tokenValue, rotation_priority: tokenPriority }) })
+      const response = await fetch(`${API_BASE}/replication/tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: tokenLabel, token_value: tokenValue, proxy_value: tokenProxy, rotation_priority: tokenPriority }) })
       if (!response.ok) throw new Error('Failed to save token')
       setTokenValue('')
+      setTokenProxy('')
       await loadReplicationData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected token error')
@@ -182,8 +213,8 @@ function App() {
           target_guild_id: targetGuildId,
           target_channel_id: targetChannelId,
           enabled: true,
-          filters: { include_threads: true },
-          settings: { pace: 'adaptive' },
+          settings: { pace: mappingPace },
+          filters: { include_threads: includeThreads },
         }),
       })
       if (!response.ok) throw new Error('Failed to save channel mapping')
@@ -196,7 +227,7 @@ function App() {
   const capturePatterns = async () => {
     setError('')
     try {
-      const response = await fetch(`${API_BASE}/replication/patterns/capture`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, min_messages_per_user: 2, max_patterns: 40 }) })
+      const response = await fetch(`${API_BASE}/replication/patterns/capture`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, min_messages_per_user: patternMinMessages, max_patterns: patternMaxPatterns }) })
       if (!response.ok) throw new Error('Failed to capture message patterns')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected pattern capture error')
@@ -209,7 +240,13 @@ function App() {
       const response = await fetch(`${API_BASE}/replication/control/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_guild_id: sourceGuildId, target_guild_id: targetGuildId, turn_count: turnCount, context_tag_trigger: '@', educational_mode_confirmed: true }),
+        body: JSON.stringify({
+          source_guild_id: sourceGuildId,
+          target_guild_id: targetGuildId,
+          turn_count: turnCount,
+          context_tag_trigger: contextTagTrigger,
+          educational_mode_confirmed: true,
+        }),
       })
       if (!response.ok) throw new Error('Failed to start replication run')
       setReplicationRun((await response.json()) as ReplicationRun)
@@ -285,13 +322,14 @@ function App() {
           <h3>Account Token Management</h3>
           <div className="form-grid">
             <input placeholder="Token label" value={tokenLabel} onChange={(e) => setTokenLabel(e.target.value)} />
-            <input placeholder="Discord user token" value={tokenValue} onChange={(e) => setTokenValue(e.target.value)} />
+             <input type="password" aria-label="Discord user token" placeholder="Discord user token" value={tokenValue} onChange={(e) => setTokenValue(e.target.value)} />
+            <input type="password" aria-label="Proxy configuration" placeholder="Proxy host:port:user:pass (optional)" value={tokenProxy} onChange={(e) => setTokenProxy(e.target.value)} />
             <input type="number" value={tokenPriority} onChange={(e) => setTokenPriority(Number(e.target.value))} min={1} max={1000} />
             <button onClick={() => void submitToken()}>Save Token</button>
           </div>
           <ul className="collection">
             {tokens.map((token) => (
-              <li key={token.id}><div><strong>{token.label}</strong><p>{token.token_preview}</p><small>{token.health_status} • usage {token.usage_count}</small></div><button onClick={() => void runHealthCheck(token.id)}>Health Check</button></li>
+              <li key={token.id}><div><strong>{token.label}</strong><p>{token.token_preview}</p><small>{token.source_identity ?? 'token-only'} • {token.proxy_preview ?? 'no-proxy'}</small><small>{token.health_status} • usage {token.usage_count}</small></div><button onClick={() => void runHealthCheck(token.id)}>Health Check</button></li>
             ))}
             {!tokens.length ? <li>No account tokens configured.</li> : null}
           </ul>
@@ -306,6 +344,12 @@ function App() {
             <button onClick={() => void addServerConnection('target')}>Connect Target</button>
             <input placeholder="Source channel ID" value={sourceChannelId} onChange={(e) => setSourceChannelId(e.target.value)} />
             <input placeholder="Target channel ID" value={targetChannelId} onChange={(e) => setTargetChannelId(e.target.value)} />
+            <select value={mappingPace} onChange={(e) => setMappingPace(e.target.value)}>
+              <option value="adaptive">adaptive</option>
+              <option value="slow">slow</option>
+              <option value="fast">fast</option>
+            </select>
+            <label><input type="checkbox" checked={includeThreads} onChange={(e) => setIncludeThreads(e.target.checked)} /> Include threads</label>
             <button onClick={() => void addChannelMapping()}>Save Channel Mapping</button>
           </div>
         </div>
@@ -315,8 +359,8 @@ function App() {
         <div>
           <h3>Replication Controls</h3>
           <div className="form-grid">
-            <button onClick={() => void capturePatterns()}>Capture Patterns</button>
-            <div className="inline-controls"><input type="number" min={1} max={200} value={turnCount} onChange={(e) => setTurnCount(Number(e.target.value))} /><button onClick={() => void runReplication()}>Run Replication</button></div>
+            <div className="inline-controls"><input type="number" min={1} max={1000} value={patternMinMessages} onChange={(e) => setPatternMinMessages(Number(e.target.value))} /><input type="number" min={1} max={200} value={patternMaxPatterns} onChange={(e) => setPatternMaxPatterns(Number(e.target.value))} /><button onClick={() => void capturePatterns()}>Capture Patterns</button></div>
+            <div className="inline-controls"><input type="number" min={1} max={200} value={turnCount} onChange={(e) => setTurnCount(Number(e.target.value))} /><input value={contextTagTrigger} onChange={(e) => setContextTagTrigger(e.target.value)} /><button onClick={() => void runReplication()}>Run Replication</button></div>
           </div>
           <ul className="collection">
             {queueItems.slice(0, 8).map((item) => (
@@ -362,6 +406,27 @@ function App() {
             {!mirrorEvents.length ? <li>No mirrored conversation events yet.</li> : null}
           </ul>
         </div>
+      </section>
+
+      <section className="panel">
+        <h3>Replication Configuration Snapshot</h3>
+        <ul className="topics">
+          <li><span>Educational-only mode</span><strong>{configSnapshot?.educational_replication_only ? 'enabled' : 'disabled'}</strong></li>
+          <li><span>Discord API base URL</span><strong>{configSnapshot?.discord_api_base_url ?? '-'}</strong></li>
+          <li><span>Discord RPM limit</span><strong>{configSnapshot?.discord_requests_per_minute ?? 0}</strong></li>
+          <li><span>Cache TTL (seconds)</span><strong>{configSnapshot?.analytics_cache_ttl_seconds ?? 0}</strong></li>
+          <li><span>OpenRouter model</span><strong>{configSnapshot?.openrouter_model ?? '-'}</strong></li>
+        </ul>
+      </section>
+
+      <section className="panel">
+        <h3>Activity Logs</h3>
+        <ul className="collection">
+          {activityLogs.slice(0, 20).map((item) => (
+            <li key={`${item.timestamp}-${item.event_type}`}><div><strong>{item.event_type}</strong><p>{item.timestamp}</p><small>{JSON.stringify(item.details)}</small></div></li>
+          ))}
+          {!activityLogs.length ? <li>No activity logs yet.</li> : null}
+        </ul>
       </section>
 
       <section className="panel">
