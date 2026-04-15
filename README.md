@@ -43,7 +43,7 @@ From repository root:
 run_application.bat
 ```
 
-This command installs backend/frontend dependencies, creates `.env` files, initializes the database automatically, and provides a command menu for running backend/frontend, validation, and an agent-session helper without Docker.
+This command installs backend/frontend dependencies, creates `.env` files, initializes the database automatically, and provides a command menu for running backend/frontend, validation, and an agent-session helper without Docker. If a configured PostgreSQL DSN is unreachable at startup, the backend automatically falls back to local SQLite (`sqlite:///./discord_research.db`) to prevent boot failure.
 
 ### 1) Infrastructure
 
@@ -115,7 +115,8 @@ From a PowerShell prompt in the repository root:
   - `email:password:discord_token` (auto-detects and extracts token)
   - `discord_token` (plain token)
 - Proxy input supports:
-  - `host:port:username:password`
+  - `host:port:username:password` (recommended, example: `pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso`)
+  - `scheme://host:port:username:password` (optional scheme override)
 
 ## Research publication support
 

@@ -43,7 +43,16 @@ class TokenManagerService:
         if not value:
             return None
 
-        parts = value.split(':')
+        scheme = 'http'
+        raw_value = value
+        if '://' in value:
+            scheme_part, remainder = value.split('://', 1)
+            if not scheme_part:
+                raise ValueError('Proxy scheme cannot be empty')
+            scheme = scheme_part.strip().lower()
+            raw_value = remainder
+
+        parts = raw_value.split(':')
         if len(parts) != 4:
             raise ValueError('Proxy format must be host:port:username:password')
 
@@ -56,12 +65,13 @@ class TokenManagerService:
         if port < 1 or port > 65535:
             raise ValueError('Proxy port must be between 1 and 65535')
 
+        stored_host = f'{scheme}://{host}' if scheme != 'http' else host
         return {
-            'host': host,
+            'host': stored_host,
             'port': port,
             'username': username,
             'password': password,
-            'url': f'http://{username}:{password}@{host}:{port}',
+            'url': f'{scheme}://{username}:{password}@{host}:{port}',
         }
 
     @staticmethod
@@ -114,7 +124,11 @@ class TokenManagerService:
         headers = {'Authorization': token.token_value}
         proxy_url = None
         if token.proxy_host and token.proxy_port and token.proxy_username and token.proxy_password:
-            proxy_url = f'http://{token.proxy_username}:{token.proxy_password}@{token.proxy_host}:{token.proxy_port}'
+            scheme = 'http'
+            host = token.proxy_host
+            if '://' in host:
+                scheme, host = host.split('://', 1)
+            proxy_url = f'{scheme}://{token.proxy_username}:{token.proxy_password}@{host}:{token.proxy_port}'
         try:
             async with httpx.AsyncClient(timeout=15, proxy=proxy_url) as client:
                 response = await client.get('https://discord.com/api/v10/users/@me', headers=headers)

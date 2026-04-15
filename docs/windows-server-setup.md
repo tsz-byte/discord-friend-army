@@ -18,6 +18,7 @@ run_application.bat
 ```
 
 This installs dependencies, auto-creates env files, initializes the database, and opens a menu for start/validate/session commands.
+If PostgreSQL is configured but unreachable, backend startup automatically falls back to local SQLite so service boot does not fail.
 
 ### Option B: PowerShell scripts
 
