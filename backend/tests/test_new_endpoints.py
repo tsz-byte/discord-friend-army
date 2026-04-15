@@ -30,7 +30,7 @@ def test_settings_update():
         json={'key': 'test_key', 'value': 'test_value'},
     )
     assert response.status_code == 200
-    assert response.json()['status'] == 'acknowledged'
+    assert response.json()['status'] == 'saved'
 
 
 def test_load_config():

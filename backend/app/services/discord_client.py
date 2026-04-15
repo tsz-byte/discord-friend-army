@@ -170,3 +170,37 @@ class DiscordClient:
                 return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
             except httpx.HTTPError as exc:
                 return {'status': 'error', 'detail': str(exc)}
+
+    async def get_guild_members(
+        self,
+        guild_id: str,
+        token: str,
+        proxy_url: str | None = None,
+        limit: int = 100,
+    ) -> list[str]:
+        """Return a list of member display names (or usernames) for a guild.
+
+        Uses the /guilds/{id}/members endpoint available to user tokens.
+        Returns an empty list on any error so callers can degrade gracefully.
+        """
+        headers = {'Authorization': token}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(
+                    f'{self.base_url}/guilds/{guild_id}/members',
+                    headers=headers,
+                    params={'limit': min(limit, 1000)},
+                )
+                if resp.status_code == 200:
+                    members = resp.json()
+                    names: list[str] = []
+                    for member in members:
+                        nick = member.get('nick')
+                        user = member.get('user') or {}
+                        display = nick or user.get('global_name') or user.get('username') or ''
+                        if display:
+                            names.append(display)
+                    return names
+            except httpx.HTTPError as exc:
+                logger.debug('get_guild_members error guild=%s: %s', guild_id, exc)
+        return []

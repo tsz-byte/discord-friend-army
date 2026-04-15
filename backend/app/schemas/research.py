@@ -212,3 +212,18 @@ class DashboardStatsResponse(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     key: str
     value: str
+
+
+class SettingsBulkUpdateRequest(BaseModel):
+    settings: dict[str, str]
+
+
+class AppSettingResponse(BaseModel):
+    key: str
+    value: str | None
+
+
+class AutoLoopStatusResponse(BaseModel):
+    enabled: bool
+    interval_seconds: int
+    task_alive: bool

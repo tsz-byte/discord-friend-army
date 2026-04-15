@@ -1,0 +1,2 @@
+{"timestamp": "2026-04-15T22:22:37.012934+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception during reset or similar"}
+{"timestamp": "2026-04-15T22:22:37.014300+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception terminating connection <sqlite3.Connection object at 0x7f8d62d026b0>"}

@@ -24,8 +24,32 @@ app.add_middleware(
 
 
 @app.on_event('startup')
-def startup_event() -> None:
+async def startup_event() -> None:
     Base.metadata.create_all(bind=engine)
+
+    # Auto-start the replication loop if there are tokens + mappings in the DB.
+    # We do this in a best-effort fashion — the loop itself logs any errors.
+    try:
+        from app.db.session import SessionLocal
+        from app.models.research import AccountToken, ChannelMapping, AppSetting
+        from app.services import auto_replication
+
+        db = SessionLocal()
+        try:
+            active_tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).count()
+            enabled_mappings = db.query(ChannelMapping).filter(ChannelMapping.enabled.is_(True)).count()
+
+            # Read stored interval setting if present.
+            interval_row = db.query(AppSetting).filter(AppSetting.key == 'auto_loop_interval_seconds').first()
+            interval = int(interval_row.value) if (interval_row and interval_row.value) else 180
+
+            if active_tokens > 0 and enabled_mappings > 0:
+                auto_replication.start_loop(interval_seconds=interval)
+        finally:
+            db.close()
+    except Exception as exc:  # pragma: no cover
+        import logging
+        logging.getLogger('discord_research').error('startup auto-loop init failed: %s', exc)
 
 
 @app.get('/health')

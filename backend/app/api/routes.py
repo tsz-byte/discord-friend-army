@@ -15,6 +15,8 @@ from app.schemas.research import (
     AccountTokenStatusRequest,
     AIConversationRequest,
     AIConversationResponse,
+    AppSettingResponse,
+    AutoLoopStatusResponse,
     ChannelMappingRequest,
     ChannelMappingResponse,
     AnalyticsOverview,
@@ -33,6 +35,7 @@ from app.schemas.research import (
     ReplicationStartRequest,
     ServerConnectionRequest,
     ServerConnectionResponse,
+    SettingsBulkUpdateRequest,
     SettingsUpdateRequest,
     SystemStatusResponse,
     UserPrivacyRequest,
@@ -49,7 +52,7 @@ from app.services.privacy import PrivacyService
 from app.services.rate_limit import DiscordRateLimiter
 from app.services.replication_engine import ConversationReplicationEngine
 from app.services.token_manager import TokenManagerService
-from app.models.research import AccountToken, MessagePattern, ReplicationSession, ServerConnection
+from app.models.research import AccountToken, AppSetting, MessagePattern, ReplicationSession, ServerConnection
 from app.models.research import ChannelMapping, ConversationMirrorEvent, CoordinationEvent, ReplicationQueueItem
 from app.models.research import ProxyEntry
 
@@ -760,6 +763,11 @@ def load_tokens_from_file(db: Session = Depends(get_db)):
     file_path = str(_PROJECT_ROOT / 't.txt')
     loaded, errors = loader.load_tokens_file(db, file_path)
     log_event('tokens_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
+    if errors:
+        import logging
+        _logger = logging.getLogger('discord_research.routes')
+        for err in errors:
+            _logger.error('[load-tokens] %s', err)
     return FileLoadResponse(loaded=loaded, errors=errors)
 
 
@@ -769,15 +777,36 @@ def load_proxies_from_file(db: Session = Depends(get_db)):
     file_path = str(_PROJECT_ROOT / 'p.txt')
     loaded, errors = loader.load_proxies_file(db, file_path)
     log_event('proxies_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
+    if errors:
+        import logging
+        _logger = logging.getLogger('discord_research.routes')
+        for err in errors:
+            _logger.error('[load-proxies] %s', err)
     return FileLoadResponse(loaded=loaded, errors=errors)
 
 
 @router.post('/config/load-file')
 def load_api_config():
+    """Reload api_key.conf and apply values to the running environment."""
     file_path = str(_PROJECT_ROOT / 'api_key.conf')
     config = FileLoaderService.load_api_config(file_path)
-    log_event('api_config_loaded', {'keys_found': list(config.keys())})
-    return {'status': 'loaded', 'keys': list(config.keys())}
+
+    # Re-apply to running environment so the new keys take effect without restart.
+    env_map = {
+        'OPENROUTER_API_KEY': 'DFA_OPENROUTER_API_KEY',
+        'AI_MODEL': 'DFA_OPENROUTER_MODEL',
+        'MAX_TOKENS': 'DFA_OPENROUTER_MAX_TOKENS',
+        'TEMPERATURE': 'DFA_OPENROUTER_TEMPERATURE',
+        'RESPONSE_TIMEOUT': 'DFA_OPENROUTER_RESPONSE_TIMEOUT',
+    }
+    applied: list[str] = []
+    for file_key, env_key in env_map.items():
+        if file_key in config:
+            os.environ[env_key] = config[file_key]
+            applied.append(file_key)
+
+    log_event('api_config_loaded', {'keys_found': list(config.keys()), 'applied': applied})
+    return {'status': 'loaded', 'keys': list(config.keys()), 'applied': applied}
 
 
 @router.get('/proxies/health', response_model=ProxyHealthResponse)
@@ -844,9 +873,108 @@ def dashboard_stats(db: Session = Depends(get_db)):
 
 
 @router.patch('/settings/update')
-def update_settings(request: SettingsUpdateRequest):
-    log_event('settings_update_requested', {'key': request.key})
-    return {'status': 'acknowledged', 'key': request.key, 'note': 'Runtime setting updates require restart for full effect'}
+def update_settings(request: SettingsUpdateRequest, db: Session = Depends(get_db)):
+    """Persist a single key/value setting to the database."""
+    row = db.query(AppSetting).filter(AppSetting.key == request.key).first()
+    if row is None:
+        row = AppSetting(key=request.key, value=request.value)
+        db.add(row)
+    else:
+        row.value = request.value
+    db.commit()
+    log_event('settings_updated', {'key': request.key})
+    return {'status': 'saved', 'key': request.key, 'value': request.value}
+
+
+@router.post('/settings/bulk-update')
+def bulk_update_settings(request: SettingsBulkUpdateRequest, db: Session = Depends(get_db)):
+    """Persist multiple settings at once."""
+    for key, value in request.settings.items():
+        row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if row is None:
+            db.add(AppSetting(key=key, value=value))
+        else:
+            row.value = value
+    db.commit()
+
+    # If the auto-loop interval was changed, restart the loop with the new value.
+    if 'auto_loop_interval_seconds' in request.settings:
+        from app.services import auto_replication
+        if auto_replication.get_status()['enabled']:
+            try:
+                interval = int(request.settings['auto_loop_interval_seconds'])
+                auto_replication.stop_loop()
+                auto_replication.start_loop(interval_seconds=interval)
+            except (ValueError, Exception):
+                pass
+
+    log_event('settings_bulk_updated', {'keys': list(request.settings.keys())})
+    return {'status': 'saved', 'updated_keys': list(request.settings.keys())}
+
+
+@router.get('/settings/all', response_model=list[AppSettingResponse])
+def get_all_settings(db: Session = Depends(get_db)):
+    """Return all persisted settings. Sensitive values are masked."""
+    _sensitive_keys = {'openrouter_api_key', 'discord_bot_token'}
+    rows = db.query(AppSetting).order_by(AppSetting.key).all()
+    result = []
+    for row in rows:
+        value = row.value
+        if row.key in _sensitive_keys and value:
+            value = value[:4] + '***' + value[-4:] if len(value) > 8 else '***'
+        result.append(AppSettingResponse(key=row.key, value=value))
+    return result
+
+
+@router.get('/replication/auto-loop/status', response_model=AutoLoopStatusResponse)
+def auto_loop_status():
+    """Return whether the automatic replication loop is running."""
+    from app.services import auto_replication
+    s = auto_replication.get_status()
+    return AutoLoopStatusResponse(**s)
+
+
+@router.post('/replication/auto-loop/start', response_model=AutoLoopStatusResponse)
+def auto_loop_start(interval_seconds: int = Query(default=180, ge=30, le=3600), db: Session = Depends(get_db)):
+    """Start the automatic replication loop."""
+    from app.services import auto_replication
+
+    # Persist the interval setting.
+    row = db.query(AppSetting).filter(AppSetting.key == 'auto_loop_interval_seconds').first()
+    if row is None:
+        db.add(AppSetting(key='auto_loop_interval_seconds', value=str(interval_seconds)))
+    else:
+        row.value = str(interval_seconds)
+    db.commit()
+
+    result = auto_replication.start_loop(interval_seconds=interval_seconds)
+    log_event('auto_loop_started', {'interval_seconds': interval_seconds})
+    return AutoLoopStatusResponse(**result)
+
+
+@router.post('/replication/auto-loop/stop', response_model=AutoLoopStatusResponse)
+def auto_loop_stop():
+    """Stop the automatic replication loop."""
+    from app.services import auto_replication
+    result = auto_replication.stop_loop()
+    log_event('auto_loop_stopped', {})
+    return AutoLoopStatusResponse(**result)
+
+
+@router.post('/replication/queue/retry-failed')
+def retry_failed_queue_items(max_retries: int = Query(default=3, ge=1, le=10), db: Session = Depends(get_db)):
+    """Re-queue failed items that have not exceeded max_retries attempts."""
+    items = (
+        db.query(ReplicationQueueItem)
+        .filter(ReplicationQueueItem.status == 'failed', ReplicationQueueItem.attempts < max_retries)
+        .all()
+    )
+    count = len(items)
+    for item in items:
+        item.status = 'queued'
+    db.commit()
+    log_event('queue_items_retried', {'count': count})
+    return {'status': 'ok', 'requeued': count}
 
 
 @router.post('/replication/servers/join-with-onboarding')
