@@ -1,13 +1,14 @@
 import logging
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import get_settings
 
 settings = get_settings()
 logger = logging.getLogger('discord_research.db')
+FALLBACK_SQLITE_DSN = 'sqlite:///./discord_research.db'
 
 
 def _create_resilient_engine():
@@ -20,20 +21,19 @@ def _create_resilient_engine():
         with primary_engine.connect() as connection:
             connection.execute(text('SELECT 1'))
         return primary_engine
-    except SQLAlchemyError as exc:
-        fallback_dsn = 'sqlite:///./discord_research.db'
+    except OperationalError as exc:
         logger.warning(
             'db_connection_fallback',
             extra={
                 'event_type': 'db_connection_fallback',
                 'details': {
                     'configured_dsn': configured_dsn,
-                    'fallback_dsn': fallback_dsn,
+                    'fallback_dsn': FALLBACK_SQLITE_DSN,
                     'reason': str(exc),
                 },
             },
         )
-        return create_engine(fallback_dsn, future=True)
+        return create_engine(FALLBACK_SQLITE_DSN, future=True)
 
 
 engine = _create_resilient_engine()

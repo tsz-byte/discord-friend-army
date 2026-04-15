@@ -11,6 +11,14 @@ from app.models.research import AccountToken
 
 class TokenManagerService:
     @staticmethod
+    def build_proxy_url(host: str, port: int, username: str, password: str) -> str:
+        scheme = 'http'
+        normalized_host = host
+        if '://' in normalized_host:
+            scheme, normalized_host = normalized_host.split('://', 1)
+        return f'{scheme}://{username}:{password}@{normalized_host}:{port}'
+
+    @staticmethod
     def token_hash(token_value: str) -> str:
         return hashlib.sha256(token_value.encode('utf-8')).hexdigest()
 
@@ -25,14 +33,19 @@ class TokenManagerService:
         value = raw_token_value.strip()
         if not value:
             raise ValueError('Token value cannot be empty')
-        parts = value.split(':')
-        if len(parts) >= 3:
-            if '@' not in parts[0]:
+        if ':' in value:
+            identity, separator, remainder = value.partition(':')
+            if separator and '@' in identity:
+                if ':' not in remainder:
+                    raise ValueError('Token is missing from email:password:token input')
+                _, extracted = remainder.rsplit(':', 1)
+                extracted = extracted.strip()
+                if not extracted:
+                    raise ValueError('Token is missing from email:password:token input')
+                return extracted, identity.strip()
+            if separator and '@' not in identity:
                 raise ValueError('Email portion of email:password:token format must contain @ symbol')
-            extracted = parts[-1].strip()
-            if not extracted:
-                raise ValueError('Token is missing from email:password:token input')
-            return extracted, parts[0].strip()
+
         return value, None
 
     @staticmethod
@@ -52,16 +65,17 @@ class TokenManagerService:
             scheme = scheme_part.strip().lower()
             raw_value = remainder
 
-        parts = raw_value.split(':')
+        parts = raw_value.split(':', 3)
         if len(parts) != 4:
             raise ValueError('Proxy format must be host:port:username:password')
 
         host, port_text, username, password = (part.strip() for part in parts)
         if not host or not username or not password:
             raise ValueError('Proxy format must include host, username, and password')
-        if not port_text.isdigit():
-            raise ValueError('Proxy port must be numeric')
-        port = int(port_text)
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise ValueError('Proxy port must be numeric') from exc
         if port < 1 or port > 65535:
             raise ValueError('Proxy port must be between 1 and 65535')
 
@@ -71,7 +85,7 @@ class TokenManagerService:
             'port': port,
             'username': username,
             'password': password,
-            'url': f'{scheme}://{username}:{password}@{host}:{port}',
+            'url': TokenManagerService.build_proxy_url(stored_host, port, username, password),
         }
 
     @staticmethod
@@ -124,11 +138,12 @@ class TokenManagerService:
         headers = {'Authorization': token.token_value}
         proxy_url = None
         if token.proxy_host and token.proxy_port and token.proxy_username and token.proxy_password:
-            scheme = 'http'
-            host = token.proxy_host
-            if '://' in host:
-                scheme, host = host.split('://', 1)
-            proxy_url = f'{scheme}://{token.proxy_username}:{token.proxy_password}@{host}:{token.proxy_port}'
+            proxy_url = self.build_proxy_url(
+                host=token.proxy_host,
+                port=token.proxy_port,
+                username=token.proxy_username,
+                password=token.proxy_password,
+            )
         try:
             async with httpx.AsyncClient(timeout=15, proxy=proxy_url) as client:
                 response = await client.get('https://discord.com/api/v10/users/@me', headers=headers)
