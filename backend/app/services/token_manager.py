@@ -23,11 +23,16 @@ class TokenManagerService:
     @staticmethod
     def normalize_token_value(raw_token_value: str) -> tuple[str, str | None]:
         value = raw_token_value.strip()
+        if not value:
+            raise ValueError('Token value cannot be empty')
         parts = value.split(':')
-        if len(parts) >= 3 and '@' in parts[0]:
+        if len(parts) >= 3:
+            if '@' not in parts[0]:
+                raise ValueError('Email portion of email:password:token format must contain @ symbol')
             extracted = parts[-1].strip()
-            if extracted:
-                return extracted, parts[0].strip()
+            if not extracted:
+                raise ValueError('Token is missing from email:password:token input')
+            return extracted, parts[0].strip()
         return value, None
 
     @staticmethod
@@ -61,7 +66,7 @@ class TokenManagerService:
 
     @staticmethod
     def proxy_preview(token: AccountToken) -> str | None:
-        if not token.proxy_host or not token.proxy_port or not token.proxy_username:
+        if not token.proxy_host or not token.proxy_port or not token.proxy_username or not token.proxy_password:
             return None
         return f'{token.proxy_host}:{token.proxy_port}:{token.proxy_username}:***'
 

@@ -322,8 +322,8 @@ function App() {
           <h3>Account Token Management</h3>
           <div className="form-grid">
             <input placeholder="Token label" value={tokenLabel} onChange={(e) => setTokenLabel(e.target.value)} />
-             <input placeholder="Discord user token" value={tokenValue} onChange={(e) => setTokenValue(e.target.value)} />
-            <input placeholder="Proxy host:port:user:pass (optional)" value={tokenProxy} onChange={(e) => setTokenProxy(e.target.value)} />
+             <input type="password" aria-label="Discord user token" placeholder="Discord user token" value={tokenValue} onChange={(e) => setTokenValue(e.target.value)} />
+            <input type="password" aria-label="Proxy configuration" placeholder="Proxy host:port:user:pass (optional)" value={tokenProxy} onChange={(e) => setTokenProxy(e.target.value)} />
             <input type="number" value={tokenPriority} onChange={(e) => setTokenPriority(Number(e.target.value))} min={1} max={1000} />
             <button onClick={() => void submitToken()}>Save Token</button>
           </div>
@@ -344,7 +344,11 @@ function App() {
             <button onClick={() => void addServerConnection('target')}>Connect Target</button>
             <input placeholder="Source channel ID" value={sourceChannelId} onChange={(e) => setSourceChannelId(e.target.value)} />
             <input placeholder="Target channel ID" value={targetChannelId} onChange={(e) => setTargetChannelId(e.target.value)} />
-            <input placeholder="Mapping pace (adaptive/slow/fast)" value={mappingPace} onChange={(e) => setMappingPace(e.target.value)} />
+            <select value={mappingPace} onChange={(e) => setMappingPace(e.target.value)}>
+              <option value="adaptive">adaptive</option>
+              <option value="slow">slow</option>
+              <option value="fast">fast</option>
+            </select>
             <label><input type="checkbox" checked={includeThreads} onChange={(e) => setIncludeThreads(e.target.checked)} /> Include threads</label>
             <button onClick={() => void addChannelMapping()}>Save Channel Mapping</button>
           </div>

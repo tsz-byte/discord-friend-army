@@ -43,11 +43,11 @@ echo [DFA] Invalid option.
 goto :menu
 
 :start_backend
-start "DFA Backend" cmd /k "cd /d ""%ROOT%\backend"" && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+start "DFA Backend" cmd /k "cd /d ""%ROOT%\backend"" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 exit /b 0
 
 :start_frontend
-start "DFA Frontend" cmd /k "cd /d ""%ROOT%\frontend"" && npm run dev -- --host 0.0.0.0"
+start "DFA Frontend" cmd /k "cd /d ""%ROOT%\frontend"" && npm run dev -- --host 127.0.0.1"
 exit /b 0
 
 :validate
