@@ -28,7 +28,7 @@ from app.schemas.research import (
     UserPrivacyRequest,
 )
 from app.core.config import get_settings
-from app.services.activity_logger import log_event
+from app.services.activity_logger import list_recent_activity_events, log_event
 from app.services.cache import CacheService
 from app.services.discord_client import DiscordClient
 from app.services.openrouter_nlp import OpenRouterNLPService
@@ -50,6 +50,20 @@ rate_limiter = DiscordRateLimiter(limit_per_minute=settings.discord_requests_per
 token_manager = TokenManagerService()
 pattern_analyzer = MessagePatternAnalyzer()
 replication_engine = ConversationReplicationEngine()
+
+
+def serialize_token_record(row: AccountToken) -> AccountTokenResponse:
+    return AccountTokenResponse(
+        id=row.id,
+        label=row.label,
+        token_preview=token_manager.token_preview(row.token_value),
+        source_identity=row.source_identity,
+        proxy_preview=token_manager.proxy_preview(row),
+        is_active=row.is_active,
+        health_status=row.health_status,
+        rotation_priority=row.rotation_priority,
+        usage_count=row.usage_count,
+    )
 
 
 @router.post('/consent/opt-in', response_model=GuildOptInResponse)
@@ -162,34 +176,24 @@ def update_user_privacy(request: UserPrivacyRequest, db: Session = Depends(get_d
 
 @router.post('/replication/tokens', response_model=AccountTokenResponse)
 def add_account_token(request: AccountTokenCreateRequest, db: Session = Depends(get_db)):
-    record = token_manager.upsert_token(db, request.label, request.token_value, request.rotation_priority)
+    try:
+        record = token_manager.upsert_token(
+            db=db,
+            label=request.label,
+            raw_token_value=request.token_value,
+            rotation_priority=request.rotation_priority,
+            proxy_value=request.proxy_value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     log_event('account_token_saved', {'token_id': record.id, 'label': record.label})
-    return AccountTokenResponse(
-        id=record.id,
-        label=record.label,
-        token_preview=token_manager.token_preview(record.token_value),
-        is_active=record.is_active,
-        health_status=record.health_status,
-        rotation_priority=record.rotation_priority,
-        usage_count=record.usage_count,
-    )
+    return serialize_token_record(record)
 
 
 @router.get('/replication/tokens', response_model=list[AccountTokenResponse])
 def list_account_tokens(db: Session = Depends(get_db)):
     rows = db.query(AccountToken).order_by(AccountToken.id.desc()).all()
-    return [
-        AccountTokenResponse(
-            id=row.id,
-            label=row.label,
-            token_preview=token_manager.token_preview(row.token_value),
-            is_active=row.is_active,
-            health_status=row.health_status,
-            rotation_priority=row.rotation_priority,
-            usage_count=row.usage_count,
-        )
-        for row in rows
-    ]
+    return [serialize_token_record(row) for row in rows]
 
 
 @router.post('/replication/tokens/{token_id}/health-check', response_model=AccountTokenResponse)
@@ -199,15 +203,7 @@ async def check_account_token_health(token_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail='Token not found')
     checked = await token_manager.health_check(db, row)
     log_event('account_token_health_checked', {'token_id': token_id, 'health_status': checked.health_status})
-    return AccountTokenResponse(
-        id=checked.id,
-        label=checked.label,
-        token_preview=token_manager.token_preview(checked.token_value),
-        is_active=checked.is_active,
-        health_status=checked.health_status,
-        rotation_priority=checked.rotation_priority,
-        usage_count=checked.usage_count,
-    )
+    return serialize_token_record(checked)
 
 
 @router.post('/replication/tokens/rotate', response_model=AccountTokenResponse)
@@ -216,15 +212,7 @@ def rotate_account_token(db: Session = Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail='No active tokens available')
     log_event('account_token_rotated', {'token_id': row.id, 'usage_count': row.usage_count})
-    return AccountTokenResponse(
-        id=row.id,
-        label=row.label,
-        token_preview=token_manager.token_preview(row.token_value),
-        is_active=row.is_active,
-        health_status=row.health_status,
-        rotation_priority=row.rotation_priority,
-        usage_count=row.usage_count,
-    )
+    return serialize_token_record(row)
 
 
 @router.patch('/replication/tokens/{token_id}/status', response_model=AccountTokenResponse)
@@ -236,15 +224,7 @@ def set_account_token_status(token_id: int, request: AccountTokenStatusRequest, 
     db.commit()
     db.refresh(row)
     log_event('account_token_status_updated', {'token_id': token_id, 'is_active': row.is_active})
-    return AccountTokenResponse(
-        id=row.id,
-        label=row.label,
-        token_preview=token_manager.token_preview(row.token_value),
-        is_active=row.is_active,
-        health_status=row.health_status,
-        rotation_priority=row.rotation_priority,
-        usage_count=row.usage_count,
-    )
+    return serialize_token_record(row)
 
 
 @router.post('/replication/servers', response_model=ServerConnectionResponse)
@@ -657,6 +637,22 @@ def replication_system_status(db: Session = Depends(get_db)):
         queue_failed=queue_failed,
         sessions_completed=sessions_completed,
     )
+
+
+@router.get('/replication/config')
+def replication_config_snapshot():
+    return {
+        'educational_replication_only': settings.educational_replication_only,
+        'discord_api_base_url': settings.discord_api_base_url,
+        'discord_requests_per_minute': settings.discord_requests_per_minute,
+        'analytics_cache_ttl_seconds': settings.analytics_cache_ttl_seconds,
+        'openrouter_model': settings.openrouter_model,
+    }
+
+
+@router.get('/replication/logs')
+def replication_logs(limit: int = Query(default=100, ge=1, le=400)):
+    return list_recent_activity_events(limit=limit)
 
 
 @router.get('/analytics/overview', response_model=AnalyticsOverview)

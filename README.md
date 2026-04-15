@@ -35,6 +35,16 @@ This project is designed around Discord ToS and academic ethics constraints:
 
 ## Quick start
 
+### All-in-one Windows startup/installer
+
+From repository root:
+
+```bat
+run_application.bat
+```
+
+This command installs backend/frontend dependencies, creates `.env` files, initializes the database automatically, and provides a command menu for running backend/frontend, validation, and an agent-session helper without Docker.
+
 ### 1) Infrastructure
 
 ```bash
@@ -76,6 +86,8 @@ npm run dev
 - `POST /api/v1/replication/tokens/{token_id}/health-check`
 - `POST /api/v1/replication/tokens/rotate`
 - `PATCH /api/v1/replication/tokens/{token_id}/status`
+- `GET /api/v1/replication/config`
+- `GET /api/v1/replication/logs`
 - `POST /api/v1/replication/servers`
 - `POST /api/v1/replication/channel-mappings`
 - `GET /api/v1/replication/channel-mappings`
@@ -96,6 +108,14 @@ From a PowerShell prompt in the repository root:
 .\scripts\windows\validate.ps1
 .\scripts\windows\start-services.ps1
 ```
+
+## Token and proxy input formats
+
+- Token input supports either:
+  - `email:password:discord_token` (auto-detects and extracts token)
+  - `discord_token` (plain token)
+- Proxy input supports:
+  - `host:port:username:password`
 
 ## Research publication support
 

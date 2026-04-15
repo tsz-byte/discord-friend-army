@@ -11,6 +11,16 @@ This guide configures the educational Discord replication research stack on Wind
 
 ## Installation Workflow
 
+### Option A: all-in-one starter (recommended)
+
+```bat
+run_application.bat
+```
+
+This installs dependencies, auto-creates env files, initializes the database, and opens a menu for start/validate/session commands.
+
+### Option B: PowerShell scripts
+
 1. Run installer:
 
 ```powershell

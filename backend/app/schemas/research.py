@@ -51,6 +51,7 @@ class ComplianceMethodology(BaseModel):
 class AccountTokenCreateRequest(BaseModel):
     label: str = Field(min_length=2, max_length=128)
     token_value: str = Field(min_length=20, max_length=500)
+    proxy_value: str | None = Field(default=None, max_length=500)
     rotation_priority: int = Field(default=100, ge=1, le=1000)
 
 
@@ -58,6 +59,8 @@ class AccountTokenResponse(BaseModel):
     id: int
     label: str
     token_preview: str
+    source_identity: str | None = None
+    proxy_preview: str | None = None
     is_active: bool
     health_status: str
     rotation_priority: int
