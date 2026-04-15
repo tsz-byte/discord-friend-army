@@ -229,6 +229,44 @@ class DiscordClient:
                 logger.debug('get_guild_members error guild=%s: %s', guild_id, exc)
         return []
 
+    async def get_channel_messages(
+        self,
+        channel_id: str,
+        token: str,
+        after: str | None = None,
+        limit: int = 50,
+        proxy_url: str | None = None,
+    ) -> list[dict]:
+        """Fetch recent messages from a Discord channel using a user token.
+
+        Returns messages in ascending order (oldest first).  Returns an empty
+        list on any error so callers can degrade gracefully.
+        """
+        headers = {'Authorization': token}
+        params: dict = {'limit': min(limit, 100)}
+        if after:
+            params['after'] = after
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(
+                    f'{self.base_url}/channels/{channel_id}/messages',
+                    headers=headers,
+                    params=params,
+                )
+                if resp.status_code == 200:
+                    messages = resp.json()
+                    # Discord returns newest first; sort to oldest first for sequential processing.
+                    messages.sort(key=lambda m: m.get('id', '0'))
+                    return messages
+                logger.debug(
+                    'get_channel_messages channel=%s status=%s',
+                    channel_id,
+                    resp.status_code,
+                )
+            except httpx.HTTPError as exc:
+                logger.debug('get_channel_messages error channel=%s: %s', channel_id, exc)
+        return []
+
     @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
         await asyncio.sleep(min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, 0.2))
