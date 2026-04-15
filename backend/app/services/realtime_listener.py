@@ -37,6 +37,10 @@ _stats: dict = {
     'started_at': None,
 }
 
+# Timing constants for send rate-limiting (seconds)
+_SEND_DELAY_MIN = 0.6
+_SEND_DELAY_JITTER = 0.4
+
 
 def get_status() -> dict:
     return {
@@ -237,7 +241,7 @@ async def _listener_loop() -> None:
 
                     db.commit()
                     # Brief delay between individual message sends to respect rate limits
-                    await asyncio.sleep(0.6 + random.uniform(0.0, 0.4))
+                    await asyncio.sleep(_SEND_DELAY_MIN + random.uniform(0.0, _SEND_DELAY_JITTER))
 
         except asyncio.CancelledError:
             break

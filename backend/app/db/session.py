@@ -9,6 +9,7 @@ from app.core.config import get_settings
 settings = get_settings()
 logger = logging.getLogger('discord_research.db')
 FALLBACK_SQLITE_DSN = 'sqlite:///./discord_research.db'
+POOL_RECYCLE_SECONDS = 1800  # 30 minutes
 
 
 def _engine_kwargs(dsn: str) -> dict:
@@ -17,12 +18,12 @@ def _engine_kwargs(dsn: str) -> dict:
             'future': True,
             'connect_args': {'check_same_thread': False},
             'pool_pre_ping': True,
-            'pool_recycle': 1800,
+            'pool_recycle': POOL_RECYCLE_SECONDS,
         }
     return {
         'future': True,
         'pool_pre_ping': True,
-        'pool_recycle': 1800,
+        'pool_recycle': POOL_RECYCLE_SECONDS,
         'pool_size': 10,
         'max_overflow': 20,
         'pool_timeout': 30,

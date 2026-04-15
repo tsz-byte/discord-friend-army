@@ -13,6 +13,7 @@ from app.models.research import AccountToken
 
 logger = logging.getLogger('discord_research.token_manager')
 RETRY_BASE_DELAY_SECONDS = 0.5
+MIN_TOKEN_LENGTH = 20  # Shortest plausible Discord user token length
 
 
 class TokenManagerService:
@@ -65,7 +66,7 @@ class TokenManagerService:
 
     @staticmethod
     def _validate_token_format(token_value: str) -> None:
-        if len(token_value) < 20:
+        if len(token_value) < MIN_TOKEN_LENGTH:
             raise ValueError('Token value is too short to be a valid Discord user token')
         if not token_value.startswith('mfa.') and token_value.count('.') < 2:
             raise ValueError('Token value format looks invalid for Discord user tokens')

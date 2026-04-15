@@ -1136,7 +1136,7 @@ def toggle_mapping_realtime(
 # ---------------------------------------------------------------------------
 
 @router.post('/realtime/start', response_model=RealtimeStatusResponse)
-def realtime_start(
+async def realtime_start(
     request: RealtimeStartRequest = Body(default_factory=RealtimeStartRequest),
 ):
     """Start the real-time channel listener."""
@@ -1148,7 +1148,7 @@ def realtime_start(
 
 
 @router.post('/realtime/stop', response_model=RealtimeStatusResponse)
-def realtime_stop():
+async def realtime_stop():
     """Stop the real-time channel listener."""
     from app.services import realtime_listener
 

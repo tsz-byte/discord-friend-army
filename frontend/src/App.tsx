@@ -695,7 +695,7 @@ function App() {
 
             <section className="panel">
               <h3>📋 Proxy List</h3>
-              {!proxyHealth?.proxies.length && <p className="empty-text">No proxies loaded. Use &quot;Load from p.txt&quot; to import proxies.</p>}
+              {!proxyHealth?.proxies.length && <p className="empty-text">No proxies loaded. Use &ldquo;Load from p.txt&rdquo; to import proxies.</p>}
               <div className="proxy-list">
                 {proxyHealth?.proxies.map((proxy) => (
                   <div key={proxy.id} className="proxy-card">
@@ -872,7 +872,7 @@ function App() {
               </div>
               <p style={{ color: '#9ca3af', fontSize: 13, marginBottom: 12 }}>
                 Monitors source channel(s) continuously and forwards every new message to the target channel using round-robin token rotation.
-                Enable &quot;RT&quot; on channel mappings in the Servers tab to activate per-mapping real-time transfer.
+                Enable &ldquo;RT&rdquo; on channel mappings in the Servers tab to activate per-mapping real-time transfer.
               </p>
               <div className="stat-cards mini" style={{ marginBottom: 12 }}>
                 <div className="stat-card-mini green-bg"><strong>{realtimeStatus?.stats?.transferred ?? 0}</strong><span>Transferred</span></div>

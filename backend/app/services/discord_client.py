@@ -9,6 +9,8 @@ from app.core.config import get_settings
 
 logger = logging.getLogger('discord_research.discord_client')
 RETRY_BASE_DELAY_SECONDS = 0.5
+RETRY_MAX_SLEEP_SECONDS = 2.0
+RETRY_JITTER_SECONDS = 0.2
 
 
 class DiscordClient:
@@ -269,7 +271,7 @@ class DiscordClient:
 
     @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
-        await asyncio.sleep(min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, 0.2))
+        await asyncio.sleep(min(RETRY_MAX_SLEEP_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, RETRY_JITTER_SECONDS))
 
     @staticmethod
     def _response_error_payload(response: httpx.Response) -> dict:
