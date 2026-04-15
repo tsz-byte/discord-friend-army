@@ -115,7 +115,7 @@ From a PowerShell prompt in the repository root:
   - `email:password:discord_token` (auto-detects and extracts token)
   - `discord_token` (plain token)
 - Proxy input supports:
-  - `host:port:username:password` (recommended, example: `pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso`)
+  - `host:port:username:password` (recommended, example: `proxy.example.net:13337:user-session-abc:password123`)
   - `scheme://host:port:username:password` (optional scheme override)
 
 ## Research publication support

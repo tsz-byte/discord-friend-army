@@ -36,6 +36,9 @@ class TokenManagerService:
         if ':' in value:
             identity, separator, remainder = value.partition(':')
             if separator and '@' in identity:
+                user_part, _, domain_part = identity.partition('@')
+                if identity.count('@') != 1 or not user_part or not domain_part:
+                    raise ValueError('Email portion of email:password:token format is invalid')
                 if ':' not in remainder:
                     raise ValueError('Token is missing from email:password:token input')
                 _, extracted = remainder.rsplit(':', 1)
@@ -43,7 +46,7 @@ class TokenManagerService:
                 if not extracted:
                     raise ValueError('Token is missing from email:password:token input')
                 return extracted, identity.strip()
-            if separator and '@' not in identity:
+            elif separator:
                 raise ValueError('Email portion of email:password:token format must contain @ symbol')
 
         return value, None

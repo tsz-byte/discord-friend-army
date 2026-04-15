@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from threading import Lock
 
 logger = logging.getLogger('discord_research.activity')
-_RECENT_EVENTS: deque[dict] = deque(maxlen=400)
+MAX_EVENT_CAPACITY = 400
+_RECENT_EVENTS: deque[dict] = deque(maxlen=MAX_EVENT_CAPACITY)
 _EVENT_LOCK = Lock()
 
 
@@ -21,6 +22,6 @@ def log_event(event_type: str, details: dict) -> None:
 
 
 def list_recent_activity_events(limit: int = 100) -> list[dict]:
-    safe_limit = max(1, min(limit, 400))
+    safe_limit = max(1, min(limit, MAX_EVENT_CAPACITY))
     with _EVENT_LOCK:
         return list(_RECENT_EVENTS)[:safe_limit]

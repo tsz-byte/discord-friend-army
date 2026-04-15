@@ -15,6 +15,7 @@ def _create_resilient_engine():
     configured_dsn = settings.postgres_dsn
     primary_engine = create_engine(configured_dsn, future=True)
     if configured_dsn.startswith('sqlite'):
+        # SQLite file DBs are created on first write; this keeps startup lightweight and uses configured DSN directly.
         return primary_engine
 
     try:
