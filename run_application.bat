@@ -2,6 +2,8 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 set "ROOT=%cd%"
+set "BACKEND_URL=http://localhost:8000"
+set "DASHBOARD_URL=%BACKEND_URL%/docs"
 
 echo.
 echo ============================================================
@@ -48,8 +50,8 @@ if "%choice%"=="1" call :start_backend & goto :menu
 if "%choice%"=="2" call :start_frontend & goto :menu
 if "%choice%"=="3" call :start_backend & call :start_frontend & goto :menu
 if "%choice%"=="4" call :validate & goto :menu
-if "%choice%"=="5" start "" http://localhost:8000/docs & goto :menu
-if "%choice%"=="6" call :start_backend & call :start_frontend & timeout /t 3 >nul & start "" http://localhost:8000/docs & goto :menu
+if "%choice%"=="5" start "" %DASHBOARD_URL% & goto :menu
+if "%choice%"=="6" call :start_backend & call :start_frontend & timeout /t 3 >nul & start "" %DASHBOARD_URL% & goto :menu
 if "%choice%"=="0" goto :eof
 echo [DFA] Invalid option.
 goto :menu

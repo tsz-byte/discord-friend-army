@@ -141,8 +141,6 @@ def show_server_connections() -> None:
 def main() -> None:
     print_banner()
 
-    errors_found = False
-
     logger.info('Step 1: Loading API configuration...')
     load_api_config()
 
