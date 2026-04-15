@@ -1,10 +1,42 @@
-from sqlalchemy import create_engine
+import logging
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import get_settings
 
 settings = get_settings()
-engine = create_engine(settings.postgres_dsn, future=True)
+logger = logging.getLogger('discord_research.db')
+
+
+def _create_resilient_engine():
+    configured_dsn = settings.postgres_dsn
+    primary_engine = create_engine(configured_dsn, future=True)
+    if configured_dsn.startswith('sqlite'):
+        return primary_engine
+
+    try:
+        with primary_engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+        return primary_engine
+    except SQLAlchemyError as exc:
+        fallback_dsn = 'sqlite:///./discord_research.db'
+        logger.warning(
+            'db_connection_fallback',
+            extra={
+                'event_type': 'db_connection_fallback',
+                'details': {
+                    'configured_dsn': configured_dsn,
+                    'fallback_dsn': fallback_dsn,
+                    'reason': str(exc),
+                },
+            },
+        )
+        return create_engine(fallback_dsn, future=True)
+
+
+engine = _create_resilient_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
