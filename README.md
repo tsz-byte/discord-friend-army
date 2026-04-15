@@ -1,123 +1,155 @@
-# Discord Community Analytics & Research Platform
+# Discord Friend Army
 
-A privacy-first analytics platform for **authorized Discord communities** focused on academic study of digital communication patterns, now including controlled educational conversation replication tooling.
+A multi-account Discord bot mimic system with AI-powered conversation generation, proxy rotation, cross-server conversation transfer, and a modern web dashboard.
 
-## What this repository includes
+## Features
 
-- **FastAPI backend** for ingestion, analytics APIs, consent management, and compliance metadata
-- **PostgreSQL persistence layer** for anonymized research events and opt-in state
-- **Redis-backed caching/rate limiting** with graceful fallback when Redis is unavailable
-- **OpenRouter NLP integration** for sentiment and topic modeling (with local fallback heuristics)
-- **React + D3 dashboard** for communication flow, sentiment trends, and activity heatmaps
-- **Transparent activity logging** with structured JSON log events
-- **Educational replication modules** for account token management, server connections, pattern capture, and controlled conversation run simulation
-- **Channel mapping and queue controls** for controlled source/target channel synchronization and replication monitoring
-- **Windows Server helper scripts** for setup, configuration, service startup, and validation workflows
+- **Multi-Account Management** — Load and manage multiple Discord account tokens simultaneously
+- **Intelligent Proxy Rotation** — Automatic proxy rotation with health checks and failover
+- **Cross-Server Conversation Sync** — Capture and transfer conversations between Discord servers
+- **AI Chat Integration** — OpenRouter API with Grok-4.1-fast for intelligent response generation
+- **Modern Dashboard** — Dark-themed tabbed UI with real-time stats, account/proxy management, and activity monitoring
+- **Single-Command Startup** — One `python start.py` command bootstraps everything
+- **File-Based Credentials** — Simple `t.txt` (tokens), `p.txt` (proxies), `api_key.conf` (API config) files
+
+## Quick Start
+
+### Step 1: Prepare credentials
+
+**`t.txt`** — Discord tokens, one per line:
+```
+MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8
+MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE
+```
+
+**`p.txt`** — Proxies, one per line (`host:port:username:password`):
+```
+pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
+proxy-server.com:8080:username:password
+```
+
+**`api_key.conf`** — OpenRouter API configuration:
+```
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxx
+AI_MODEL=x-ai/grok-4.1-fast
+MAX_TOKENS=4096
+TEMPERATURE=0.7
+RESPONSE_TIMEOUT=30
+```
+
+### Step 2: Install dependencies
+
+```bash
+cd backend && pip install -r requirements.txt
+cd ../frontend && npm install
+```
+
+### Step 3: Run
+
+```bash
+python start.py
+```
+
+### Step 4: Open dashboard
+
+Navigate to **http://localhost:8000** — the dashboard loads with all accounts and proxies validated.
 
 ## Architecture
 
-- `backend/` — API layer, Discord integration, NLP service, privacy controls
-- `frontend/` — researcher/admin dashboard with D3 visualizations
-- `docs/` — methodology and compliance guidance
+```
+discord-friend-army/
+├── start.py             # Unified startup entry point
+├── t.txt                # Discord tokens (one per line)
+├── p.txt                # Proxy list (host:port:user:pass per line)
+├── api_key.conf         # OpenRouter API key + model configuration
+├── backend/
+│   ├── app/
+│   │   ├── main.py          # FastAPI application
+│   │   ├── core/config.py   # Settings (Pydantic)
+│   │   ├── api/routes.py    # All API endpoints
+│   │   ├── models/          # SQLAlchemy models
+│   │   ├── schemas/         # Pydantic request/response schemas
+│   │   ├── services/
+│   │   │   ├── ai_chat.py           # OpenRouter Grok-4.1-fast integration
+│   │   │   ├── file_loader.py       # t.txt / p.txt / api_key.conf parser
+│   │   │   ├── token_manager.py     # Token rotation + health checks
+│   │   │   ├── discord_client.py    # Discord API client
+│   │   │   ├── replication_engine.py# Conversation mirroring engine
+│   │   │   ├── pattern_analyzer.py  # Message pattern capture
+│   │   │   └── ...
+│   │   └── db/session.py    # SQLite/PostgreSQL with fallback
+│   └── tests/
+├── frontend/
+│   └── src/
+│       ├── App.tsx          # Tabbed dashboard (8 panels)
+│       └── App.css          # Dark theme styles
+└── docker-compose.yml
+```
 
-## Compliance and ethics
+## Dashboard Panels
 
-This project is designed around Discord ToS and academic ethics constraints:
+| Tab | Description |
+|-----|-------------|
+| **Overview** | Active accounts, proxy stats, AI metrics, activity heatmap, sentiment trends |
+| **Accounts** | Load tokens from t.txt, add/remove accounts, health checks, enable/disable |
+| **Proxies** | Load proxies from p.txt, health indicators, success rates |
+| **Servers** | Source/target server config, invite link copy, channel mappings |
+| **AI Config** | OpenRouter API key, model settings, test AI chat |
+| **Sync** | Cross-server sync controls, pattern capture, replication runs |
+| **Activity** | Real-time log feed with search/filter |
+| **Settings** | Config snapshot, credential file reloading |
 
-- Official Discord bot API usage only (`Bot` token flows)
-- Explicit server-level opt-in (`/api/v1/consent/opt-in`)
-- User-level privacy controls (`/api/v1/privacy/user-preferences`)
-- Salted SHA-256 anonymization for participant identifiers
-- GDPR/CCPA-oriented retention and deletion patterns
-- Methodology endpoint for publication transparency (`/api/v1/compliance/methodology`)
-- Educational replication runs require explicit confirmation and are restricted to controlled environments
-- Replication quality is best-effort for research simulation and **not** a guarantee of perfect 1:1 user impersonation fidelity
+## API Endpoints
 
-## Quick start
+### Credential Management
+- `POST /api/v1/accounts/load-file` — Load tokens from `t.txt`
+- `POST /api/v1/proxies/load-file` — Load proxies from `p.txt`
+- `POST /api/v1/config/load-file` — Load settings from `api_key.conf`
 
-### All-in-one Windows startup/installer
+### Account & Proxy Operations
+- `POST /api/v1/replication/tokens` — Add individual token
+- `POST /api/v1/replication/tokens/{id}/health-check` — Check token health
+- `POST /api/v1/replication/tokens/rotate` — Rotate to next token
+- `GET /api/v1/proxies/health` — Proxy health metrics
+- `GET /api/v1/dashboard/stats` — Dashboard statistics
 
-From repository root:
+### AI Integration
+- `POST /api/v1/ai/chat` — Send AI chat message via Grok-4.1-fast
 
+### Conversation Sync
+- `POST /api/v1/replication/servers` — Add server connection
+- `POST /api/v1/replication/channel-mappings` — Map source → target channels
+- `POST /api/v1/replication/patterns/capture` — Capture message patterns
+- `POST /api/v1/replication/control/start` — Start replication session
+- `GET /api/v1/replication/control/conversations` — View mirrored conversations
+- `GET /api/v1/replication/status` — System status overview
+
+### Analytics
+- `GET /api/v1/analytics/overview?guild_id=...`
+- `GET /api/v1/analytics/sentiment-trend?guild_id=...`
+- `GET /api/v1/analytics/activity-heatmap?guild_id=...`
+
+### Settings
+- `PATCH /api/v1/settings/update` — Update runtime settings
+
+## Windows Quick Setup
+
+```powershell
+.\scripts\windows\install.ps1
+.\scripts\windows\start-services.ps1
+```
+
+Or use the menu launcher:
 ```bat
 run_application.bat
 ```
 
-This command installs backend/frontend dependencies, creates `.env` files, initializes the database automatically, and provides a command menu for running backend/frontend, validation, and an agent-session helper without Docker. If a configured PostgreSQL DSN is unreachable at startup, the backend automatically falls back to local SQLite (`sqlite:///./discord_research.db`) to prevent boot failure.
+## Token Format
 
-### 1) Infrastructure
+- **Simple format**: One Discord token per line in `t.txt`
+- **Legacy format**: `email:password:token` (auto-detected, token extracted)
 
-```bash
-docker compose up -d
-```
+## Proxy Format
 
-### 2) Backend
-
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --reload
-```
-
-### 3) Frontend
-
-```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
-```
-
-## API highlights
-
-- `POST /api/v1/consent/opt-in`
-- `POST /api/v1/consent/opt-out?guild_id=...`
-- `POST /api/v1/ingest/messages`
-- `POST /api/v1/privacy/user-preferences`
-- `GET /api/v1/analytics/overview?guild_id=...`
-- `GET /api/v1/analytics/sentiment-trend?guild_id=...`
-- `GET /api/v1/analytics/activity-heatmap?guild_id=...`
-- `GET /api/v1/analytics/interaction-flow?guild_id=...`
-- `GET /api/v1/compliance/methodology`
-- `POST /api/v1/replication/tokens`
-- `POST /api/v1/replication/tokens/{token_id}/health-check`
-- `POST /api/v1/replication/tokens/rotate`
-- `PATCH /api/v1/replication/tokens/{token_id}/status`
-- `GET /api/v1/replication/config`
-- `GET /api/v1/replication/logs`
-- `POST /api/v1/replication/servers`
-- `POST /api/v1/replication/channel-mappings`
-- `GET /api/v1/replication/channel-mappings`
-- `POST /api/v1/replication/patterns/capture`
-- `POST /api/v1/replication/control/start`
-- `POST /api/v1/replication/control/enqueue`
-- `GET /api/v1/replication/control/queue`
-- `GET /api/v1/replication/control/conversations`
-- `GET /api/v1/replication/status`
-
-## Windows Server quick setup
-
-From a PowerShell prompt in the repository root:
-
-```powershell
-.\scripts\windows\install.ps1
-.\scripts\windows\config-wizard.ps1
-.\scripts\windows\validate.ps1
-.\scripts\windows\start-services.ps1
-```
-
-## Token and proxy input formats
-
-- Token input supports either:
-  - `email:password:discord_token` (auto-detects and extracts token)
-  - `discord_token` (plain token)
-- Proxy input supports:
-  - `host:port:username:password` (recommended, example: `proxy.example.net:13337:user-session-abc:password123`)
-  - `scheme://host:port:username:password` (optional scheme override)
-
-## Research publication support
-
-See `docs/methodology.md` for recommended methodology disclosure and publication workflow.
+- `host:port:username:password` — one per line in `p.txt`
+- Example: `pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso`
