@@ -79,7 +79,7 @@ def load_credentials() -> None:
         p_path = os.path.join(ROOT_DIR, 'p.txt')
         if os.path.isfile(p_path):
             loaded, errors = loader.load_proxies_file(db, p_path)
-            logger.info(f'  [p.txt] Loaded {loaded} proxy/proxies')
+            logger.info(f'  [p.txt] Loaded {loaded} {"proxy" if loaded == 1 else "proxies"}')
             for err in errors:
                 logger.warning(f'  [p.txt] {err}')
         else:

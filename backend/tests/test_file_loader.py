@@ -22,7 +22,6 @@ def test_load_tokens_from_file():
         f.write('MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8\n')
         f.write('\n')
         f.write('MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE\n')
-        f.name
     try:
         loaded, errors = loader.load_tokens_file(db, f.name)
         assert loaded == 2

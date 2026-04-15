@@ -1,6 +1,7 @@
 import os
 import time
 from collections import Counter
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func
@@ -53,6 +54,7 @@ from app.models.research import ChannelMapping, ConversationMirrorEvent, Coordin
 from app.models.research import ProxyEntry
 
 _startup_time = time.time()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 router = APIRouter(prefix='/api/v1')
 settings = get_settings()
@@ -751,8 +753,7 @@ def interaction_flow(guild_id: str, db: Session = Depends(get_db)):
 @router.post('/accounts/load-file', response_model=FileLoadResponse)
 def load_tokens_from_file(db: Session = Depends(get_db)):
     loader = FileLoaderService()
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    file_path = os.path.join(root, 't.txt')
+    file_path = str(_PROJECT_ROOT / 't.txt')
     loaded, errors = loader.load_tokens_file(db, file_path)
     log_event('tokens_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
     return FileLoadResponse(loaded=loaded, errors=errors)
@@ -761,8 +762,7 @@ def load_tokens_from_file(db: Session = Depends(get_db)):
 @router.post('/proxies/load-file', response_model=FileLoadResponse)
 def load_proxies_from_file(db: Session = Depends(get_db)):
     loader = FileLoaderService()
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    file_path = os.path.join(root, 'p.txt')
+    file_path = str(_PROJECT_ROOT / 'p.txt')
     loaded, errors = loader.load_proxies_file(db, file_path)
     log_event('proxies_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
     return FileLoadResponse(loaded=loaded, errors=errors)
@@ -770,8 +770,7 @@ def load_proxies_from_file(db: Session = Depends(get_db)):
 
 @router.post('/config/load-file')
 def load_api_config():
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    file_path = os.path.join(root, 'api_key.conf')
+    file_path = str(_PROJECT_ROOT / 'api_key.conf')
     config = FileLoaderService.load_api_config(file_path)
     log_event('api_config_loaded', {'keys_found': list(config.keys())})
     return {'status': 'loaded', 'keys': list(config.keys())}

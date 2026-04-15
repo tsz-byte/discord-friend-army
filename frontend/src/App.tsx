@@ -50,7 +50,7 @@ function App() {
   const [dashStats, setDashStats] = useState<DashboardStats | null>(null)
   const [proxyHealth, setProxyHealth] = useState<ProxyHealth | null>(null)
 
-  const [tokenLabel, setTokenLabel] = useState('account-1')
+  const [tokenLabel, setTokenLabel] = useState('token-1')
   const [tokenValue, setTokenValue] = useState('')
   const [tokenProxy, setTokenProxy] = useState('')
   const [tokenPriority, setTokenPriority] = useState(100)
@@ -294,8 +294,11 @@ function App() {
   }
 
   const copyInviteLink = () => {
-    const link = inviteLink || `https://discord.gg/invite-placeholder`
-    void navigator.clipboard.writeText(link)
+    if (!inviteLink) {
+      flash('Enter an invite link first')
+      return
+    }
+    void navigator.clipboard.writeText(inviteLink)
     flash('Invite link copied to clipboard!')
   }
 
