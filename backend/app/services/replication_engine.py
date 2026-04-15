@@ -76,7 +76,10 @@ class ConversationReplicationEngine:
                 break
 
             pattern = random.choice(patterns) if patterns else None
-            base_sample = random.choice(pattern.sample_messages) if pattern and pattern.sample_messages else 'Educational replication placeholder.'
+            if pattern is not None and pattern.sample_messages:
+                base_sample = random.choice(pattern.sample_messages)
+            else:
+                base_sample = 'Educational replication placeholder.'
             response_time_ms = self._compute_response_time(pattern)
 
             sample = base_sample
