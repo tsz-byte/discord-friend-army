@@ -1,7 +1,7 @@
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -153,11 +153,27 @@ def analytics_overview(guild_id: str, db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
-    rows = db.query(MessageResearchEvent).filter(MessageResearchEvent.guild_id == guild_id).all()
-    score_map = {'negative': -1, 'neutral': 0, 'positive': 1}
-    avg_sentiment = round(sum(score_map.get(row.sentiment, 0) for row in rows) / total_messages, 3) if total_messages else 0.0
+    sentiment_avg = (
+        db.query(
+            func.avg(
+                case(
+                    (MessageResearchEvent.sentiment == 'positive', 1),
+                    (MessageResearchEvent.sentiment == 'negative', -1),
+                    else_=0,
+                )
+            )
+        )
+        .filter(MessageResearchEvent.guild_id == guild_id)
+        .scalar()
+    )
+    avg_sentiment = round(float(sentiment_avg or 0.0), 3)
 
-    topics = Counter(topic for row in rows for topic in row.topics)
+    topic_rows = (
+        db.query(MessageResearchEvent.topics)
+        .filter(MessageResearchEvent.guild_id == guild_id)
+        .all()
+    )
+    topics = Counter(topic for row in topic_rows for topic in row[0])
     response = AnalyticsOverview(
         guild_id=guild_id,
         total_messages=total_messages,

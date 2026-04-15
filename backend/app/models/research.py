@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, func
 
 from app.db.session import Base
 
@@ -13,7 +11,7 @@ class GuildOptIn(Base):
     guild_name = Column(String(255), nullable=False)
     opted_in = Column(Boolean, default=True, nullable=False)
     methodology_version = Column(String(32), nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class UserPrivacyPreference(Base):
@@ -24,7 +22,7 @@ class UserPrivacyPreference(Base):
     user_hash = Column(String(128), nullable=False, index=True)
     include_in_research = Column(Boolean, default=True, nullable=False)
     retention_days = Column(Integer, default=90)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class MessageResearchEvent(Base):
@@ -37,6 +35,6 @@ class MessageResearchEvent(Base):
     sentiment = Column(String(16), nullable=False)
     topics = Column(JSON, nullable=False, default=list)
     interaction_edges = Column(JSON, nullable=False, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     event_metadata = Column('metadata', JSON, nullable=False, default=dict)
     content_excerpt = Column(Text, nullable=True)
