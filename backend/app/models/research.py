@@ -96,3 +96,62 @@ class ReplicationSession(Base):
     session_metrics = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ChannelMapping(Base):
+    __tablename__ = 'channel_mapping'
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_guild_id = Column(String(32), nullable=False, index=True)
+    source_channel_id = Column(String(32), nullable=False, index=True)
+    target_guild_id = Column(String(32), nullable=False, index=True)
+    target_channel_id = Column(String(32), nullable=False, index=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    filters = Column(JSON, nullable=False, default=dict)
+    settings = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ReplicationQueueItem(Base):
+    __tablename__ = 'replication_queue_item'
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, nullable=False, index=True)
+    source_guild_id = Column(String(32), nullable=False, index=True)
+    source_channel_id = Column(String(32), nullable=False, index=True)
+    target_guild_id = Column(String(32), nullable=False, index=True)
+    target_channel_id = Column(String(32), nullable=False, index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default='queued')
+    attempts = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    queued_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    processed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class CoordinationEvent(Base):
+    __tablename__ = 'coordination_event'
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, nullable=False, index=True)
+    trigger_account_label = Column(String(128), nullable=False)
+    responder_account_label = Column(String(128), nullable=False)
+    reason = Column(String(255), nullable=False, default='mention_trigger')
+    event_metadata = Column('metadata', JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ConversationMirrorEvent(Base):
+    __tablename__ = 'conversation_mirror_event'
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, nullable=False, index=True)
+    source_channel_id = Column(String(32), nullable=False, index=True)
+    target_channel_id = Column(String(32), nullable=False, index=True)
+    source_content = Column(Text, nullable=False)
+    replicated_content = Column(Text, nullable=False)
+    source_author_hash = Column(String(128), nullable=False, index=True)
+    responder_account_label = Column(String(128), nullable=False)
+    response_time_ms = Column(Integer, nullable=False, default=0)
+    replicated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)

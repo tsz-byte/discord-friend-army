@@ -104,3 +104,54 @@ class ReplicationResponse(BaseModel):
     session_id: int
     status: str
     generated_messages: list[dict]
+
+
+class ChannelMappingRequest(BaseModel):
+    source_guild_id: str
+    source_channel_id: str
+    target_guild_id: str
+    target_channel_id: str
+    enabled: bool = True
+    filters: dict = Field(default_factory=dict)
+    settings: dict = Field(default_factory=dict)
+
+
+class ChannelMappingResponse(BaseModel):
+    id: int
+    source_guild_id: str
+    source_channel_id: str
+    target_guild_id: str
+    target_channel_id: str
+    enabled: bool
+    filters: dict
+    settings: dict
+
+
+class ReplicationQueueResponse(BaseModel):
+    id: int
+    session_id: int
+    source_channel_id: str
+    target_channel_id: str
+    status: str
+    attempts: int
+    error: str | None = None
+
+
+class ReplicationControlRequest(BaseModel):
+    source_guild_id: str
+    target_guild_id: str
+    source_channel_id: str
+    target_channel_id: str
+    source_content: str = Field(min_length=1, max_length=4000)
+    source_author_hash: str = Field(min_length=6, max_length=128)
+
+
+class SystemStatusResponse(BaseModel):
+    active_tokens: int
+    healthy_tokens: int
+    source_connections: int
+    target_connections: int
+    enabled_channel_mappings: int
+    queue_pending: int
+    queue_failed: int
+    sessions_completed: int

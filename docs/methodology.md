@@ -19,6 +19,8 @@ The platform supports longitudinal and cross-sectional analyses of:
 5. **Retention settings** support GDPR/CCPA-aligned data lifecycle workflows.
 6. **Controlled replication mode** requires explicit educational confirmation and preconfigured source/target server records.
 7. **Token minimization** stores masked token previews in APIs and excludes token values from activity logs.
+8. **Channel mapping controls** require explicit source-to-target mapping to constrain replication scope.
+9. **Queue and failure tracking** are retained for auditability and transparent recovery workflows.
 
 ## Recommended disclosure for publications
 
@@ -29,6 +31,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Known limitations and bias controls
 - Reproducibility notes for aggregate metric exports
 - Replication protocol constraints, including tag-response logic and controlled-environment scope
+- Replication quality metrics (coverage, response-time, context-hit rates) instead of claiming perfect fidelity
 
 ## Administrator value
 
@@ -51,3 +54,4 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Never run replication workloads against communities without documented approval.
 - Keep all outputs anonymized in publications, demos, and data exports.
 - Maintain transparent logs for token health checks, pattern capture events, and replication sessions.
+- Present replication as best-effort educational simulation; avoid claims of exact user impersonation.

@@ -31,6 +31,10 @@
   gap: 0.8rem;
 }
 
+.status-grid .status-metrics {
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
 .metrics article {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;

@@ -11,6 +11,8 @@ A privacy-first analytics platform for **authorized Discord communities** focuse
 - **React + D3 dashboard** for communication flow, sentiment trends, and activity heatmaps
 - **Transparent activity logging** with structured JSON log events
 - **Educational replication modules** for account token management, server connections, pattern capture, and controlled conversation run simulation
+- **Channel mapping and queue controls** for controlled source/target channel synchronization and replication monitoring
+- **Windows Server helper scripts** for setup, configuration, service startup, and validation workflows
 
 ## Architecture
 
@@ -29,6 +31,7 @@ This project is designed around Discord ToS and academic ethics constraints:
 - GDPR/CCPA-oriented retention and deletion patterns
 - Methodology endpoint for publication transparency (`/api/v1/compliance/methodology`)
 - Educational replication runs require explicit confirmation and are restricted to controlled environments
+- Replication quality is best-effort for research simulation and **not** a guarantee of perfect 1:1 user impersonation fidelity
 
 ## Quick start
 
@@ -74,8 +77,25 @@ npm run dev
 - `POST /api/v1/replication/tokens/rotate`
 - `PATCH /api/v1/replication/tokens/{token_id}/status`
 - `POST /api/v1/replication/servers`
+- `POST /api/v1/replication/channel-mappings`
+- `GET /api/v1/replication/channel-mappings`
 - `POST /api/v1/replication/patterns/capture`
 - `POST /api/v1/replication/control/start`
+- `POST /api/v1/replication/control/enqueue`
+- `GET /api/v1/replication/control/queue`
+- `GET /api/v1/replication/control/conversations`
+- `GET /api/v1/replication/status`
+
+## Windows Server quick setup
+
+From a PowerShell prompt in the repository root:
+
+```powershell
+.\scripts\windows\install.ps1
+.\scripts\windows\config-wizard.ps1
+.\scripts\windows\validate.ps1
+.\scripts\windows\start-services.ps1
+```
 
 ## Research publication support
 

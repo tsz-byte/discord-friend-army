@@ -10,12 +10,16 @@ from app.schemas.research import (
     AccountTokenCreateRequest,
     AccountTokenResponse,
     AccountTokenStatusRequest,
+    ChannelMappingRequest,
+    ChannelMappingResponse,
     AnalyticsOverview,
     ComplianceMethodology,
     GuildOptInRequest,
     GuildOptInResponse,
     MessageIngestRequest,
     PatternCaptureRequest,
+    ReplicationControlRequest,
+    ReplicationQueueResponse,
     ReplicationResponse,
     ReplicationStartRequest,
     ServerConnectionRequest,
@@ -33,6 +37,7 @@ from app.services.rate_limit import DiscordRateLimiter
 from app.services.replication_engine import ConversationReplicationEngine
 from app.services.token_manager import TokenManagerService
 from app.models.research import AccountToken, MessagePattern, ReplicationSession, ServerConnection
+from app.models.research import ChannelMapping, ConversationMirrorEvent, CoordinationEvent, ReplicationQueueItem
 
 router = APIRouter(prefix='/api/v1')
 settings = get_settings()
@@ -302,6 +307,92 @@ def list_server_connections(db: Session = Depends(get_db)):
     ]
 
 
+@router.post('/replication/channel-mappings', response_model=ChannelMappingResponse)
+def save_channel_mapping(request: ChannelMappingRequest, db: Session = Depends(get_db)):
+    source_server = (
+        db.query(ServerConnection)
+        .filter(ServerConnection.guild_id == request.source_guild_id, ServerConnection.role == 'source', ServerConnection.enabled.is_(True))
+        .first()
+    )
+    target_server = (
+        db.query(ServerConnection)
+        .filter(ServerConnection.guild_id == request.target_guild_id, ServerConnection.role == 'target', ServerConnection.enabled.is_(True))
+        .first()
+    )
+    if source_server is None or target_server is None:
+        raise HTTPException(status_code=400, detail='Channel mappings require active source and target server connections')
+
+    row = (
+        db.query(ChannelMapping)
+        .filter(
+            ChannelMapping.source_guild_id == request.source_guild_id,
+            ChannelMapping.source_channel_id == request.source_channel_id,
+            ChannelMapping.target_guild_id == request.target_guild_id,
+            ChannelMapping.target_channel_id == request.target_channel_id,
+        )
+        .first()
+    )
+    if row is None:
+        row = ChannelMapping(
+            source_guild_id=request.source_guild_id,
+            source_channel_id=request.source_channel_id,
+            target_guild_id=request.target_guild_id,
+            target_channel_id=request.target_channel_id,
+            enabled=request.enabled,
+            filters=request.filters,
+            settings=request.settings,
+        )
+        db.add(row)
+    else:
+        row.enabled = request.enabled
+        row.filters = request.filters
+        row.settings = request.settings
+    db.commit()
+    db.refresh(row)
+    log_event(
+        'channel_mapping_saved',
+        {
+            'source_guild_id': row.source_guild_id,
+            'source_channel_id': row.source_channel_id,
+            'target_guild_id': row.target_guild_id,
+            'target_channel_id': row.target_channel_id,
+        },
+    )
+    return ChannelMappingResponse(
+        id=row.id,
+        source_guild_id=row.source_guild_id,
+        source_channel_id=row.source_channel_id,
+        target_guild_id=row.target_guild_id,
+        target_channel_id=row.target_channel_id,
+        enabled=row.enabled,
+        filters=row.filters,
+        settings=row.settings,
+    )
+
+
+@router.get('/replication/channel-mappings', response_model=list[ChannelMappingResponse])
+def list_channel_mappings(source_guild_id: str | None = None, target_guild_id: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(ChannelMapping)
+    if source_guild_id:
+        query = query.filter(ChannelMapping.source_guild_id == source_guild_id)
+    if target_guild_id:
+        query = query.filter(ChannelMapping.target_guild_id == target_guild_id)
+    rows = query.order_by(ChannelMapping.id.desc()).all()
+    return [
+        ChannelMappingResponse(
+            id=row.id,
+            source_guild_id=row.source_guild_id,
+            source_channel_id=row.source_channel_id,
+            target_guild_id=row.target_guild_id,
+            target_channel_id=row.target_channel_id,
+            enabled=row.enabled,
+            filters=row.filters,
+            settings=row.settings,
+        )
+        for row in rows
+    ]
+
+
 @router.post('/replication/patterns/capture')
 def capture_patterns(request: PatternCaptureRequest, db: Session = Depends(get_db)):
     patterns = pattern_analyzer.capture_patterns(
@@ -380,6 +471,74 @@ def start_replication(request: ReplicationStartRequest, db: Session = Depends(ge
     return ReplicationResponse(session_id=session.id, status=session.status, generated_messages=generated_messages)
 
 
+@router.post('/replication/control/enqueue', response_model=ReplicationQueueResponse)
+def enqueue_replication_message(request: ReplicationControlRequest, db: Session = Depends(get_db)):
+    mapping = (
+        db.query(ChannelMapping)
+        .filter(
+            ChannelMapping.source_guild_id == request.source_guild_id,
+            ChannelMapping.target_guild_id == request.target_guild_id,
+            ChannelMapping.source_channel_id == request.source_channel_id,
+            ChannelMapping.target_channel_id == request.target_channel_id,
+            ChannelMapping.enabled.is_(True),
+        )
+        .first()
+    )
+    if mapping is None:
+        raise HTTPException(status_code=404, detail='No enabled channel mapping found for provided source/target channels')
+
+    session = (
+        db.query(ReplicationSession)
+        .filter(
+            ReplicationSession.source_guild_id == request.source_guild_id,
+            ReplicationSession.target_guild_id == request.target_guild_id,
+        )
+        .order_by(ReplicationSession.id.desc())
+        .first()
+    )
+    if session is None:
+        session = ReplicationSession(
+            source_guild_id=request.source_guild_id,
+            target_guild_id=request.target_guild_id,
+            mode='educational_controlled',
+            status='running',
+            account_plan=[],
+            session_metrics={'manual_queue': True},
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+
+    queue_item = ReplicationQueueItem(
+        session_id=session.id,
+        source_guild_id=request.source_guild_id,
+        source_channel_id=request.source_channel_id,
+        target_guild_id=request.target_guild_id,
+        target_channel_id=request.target_channel_id,
+        payload={
+            'source_content': request.source_content,
+            'replicated_content': request.source_content,
+            'source_author_hash': request.source_author_hash,
+            'context_aware': False,
+            'response_time_ms': 0,
+        },
+        status='queued',
+    )
+    db.add(queue_item)
+    db.commit()
+    db.refresh(queue_item)
+    log_event('replication_queue_enqueued', {'queue_id': queue_item.id, 'session_id': session.id})
+    return ReplicationQueueResponse(
+        id=queue_item.id,
+        session_id=queue_item.session_id,
+        source_channel_id=queue_item.source_channel_id,
+        target_channel_id=queue_item.target_channel_id,
+        status=queue_item.status,
+        attempts=queue_item.attempts,
+        error=queue_item.error,
+    )
+
+
 @router.get('/replication/control/sessions')
 def list_replication_sessions(db: Session = Depends(get_db)):
     rows = db.query(ReplicationSession).order_by(ReplicationSession.id.desc()).all()
@@ -394,6 +553,109 @@ def list_replication_sessions(db: Session = Depends(get_db)):
         }
         for row in rows
     ]
+
+
+@router.get('/replication/control/queue', response_model=list[ReplicationQueueResponse])
+def list_replication_queue(session_id: int | None = None, status_filter: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(ReplicationQueueItem)
+    if session_id is not None:
+        query = query.filter(ReplicationQueueItem.session_id == session_id)
+    if status_filter is not None:
+        query = query.filter(ReplicationQueueItem.status == status_filter)
+    rows = query.order_by(ReplicationQueueItem.id.desc()).limit(300).all()
+    return [
+        ReplicationQueueResponse(
+            id=row.id,
+            session_id=row.session_id,
+            source_channel_id=row.source_channel_id,
+            target_channel_id=row.target_channel_id,
+            status=row.status,
+            attempts=row.attempts,
+            error=row.error,
+        )
+        for row in rows
+    ]
+
+
+@router.get('/replication/control/coordination')
+def list_coordination_events(session_id: int | None = None, db: Session = Depends(get_db)):
+    query = db.query(CoordinationEvent)
+    if session_id is not None:
+        query = query.filter(CoordinationEvent.session_id == session_id)
+    rows = query.order_by(CoordinationEvent.id.desc()).limit(200).all()
+    return [
+        {
+            'id': row.id,
+            'session_id': row.session_id,
+            'trigger_account_label': row.trigger_account_label,
+            'responder_account_label': row.responder_account_label,
+            'reason': row.reason,
+            'metadata': row.event_metadata,
+        }
+        for row in rows
+    ]
+
+
+@router.get('/replication/control/conversations')
+def list_conversation_mirror(session_id: int | None = None, db: Session = Depends(get_db)):
+    query = db.query(ConversationMirrorEvent)
+    if session_id is not None:
+        query = query.filter(ConversationMirrorEvent.session_id == session_id)
+    rows = query.order_by(ConversationMirrorEvent.id.desc()).limit(300).all()
+    return [
+        {
+            'id': row.id,
+            'session_id': row.session_id,
+            'source_channel_id': row.source_channel_id,
+            'target_channel_id': row.target_channel_id,
+            'source_content': row.source_content,
+            'replicated_content': row.replicated_content,
+            'source_author_hash': row.source_author_hash,
+            'responder_account_label': row.responder_account_label,
+            'response_time_ms': row.response_time_ms,
+            'replicated_at': row.replicated_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+@router.get('/replication/status', response_model=SystemStatusResponse)
+def replication_system_status(db: Session = Depends(get_db)):
+    active_tokens = db.query(func.count(AccountToken.id)).filter(AccountToken.is_active.is_(True)).scalar() or 0
+    healthy_tokens = (
+        db.query(func.count(AccountToken.id))
+        .filter(AccountToken.is_active.is_(True), AccountToken.health_status.in_(['healthy', 'unknown']))
+        .scalar()
+        or 0
+    )
+    source_connections = (
+        db.query(func.count(ServerConnection.id))
+        .filter(ServerConnection.role == 'source', ServerConnection.enabled.is_(True))
+        .scalar()
+        or 0
+    )
+    target_connections = (
+        db.query(func.count(ServerConnection.id))
+        .filter(ServerConnection.role == 'target', ServerConnection.enabled.is_(True))
+        .scalar()
+        or 0
+    )
+    enabled_channel_mappings = db.query(func.count(ChannelMapping.id)).filter(ChannelMapping.enabled.is_(True)).scalar() or 0
+    queue_pending = db.query(func.count(ReplicationQueueItem.id)).filter(ReplicationQueueItem.status == 'queued').scalar() or 0
+    queue_failed = db.query(func.count(ReplicationQueueItem.id)).filter(ReplicationQueueItem.status == 'failed').scalar() or 0
+    sessions_completed = (
+        db.query(func.count(ReplicationSession.id)).filter(ReplicationSession.status == 'completed').scalar() or 0
+    )
+    return SystemStatusResponse(
+        active_tokens=active_tokens,
+        healthy_tokens=healthy_tokens,
+        source_connections=source_connections,
+        target_connections=target_connections,
+        enabled_channel_mappings=enabled_channel_mappings,
+        queue_pending=queue_pending,
+        queue_failed=queue_failed,
+        sessions_completed=sessions_completed,
+    )
 
 
 @router.get('/analytics/overview', response_model=AnalyticsOverview)
@@ -486,3 +748,4 @@ def compliance_methodology() -> ComplianceMethodology:
             'Educational conversation replication session metadata with account masking',
         ],
     )
+    SystemStatusResponse,
