@@ -1,4 +1,7 @@
+import os
+import time
 from collections import Counter
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func
@@ -10,27 +13,36 @@ from app.schemas.research import (
     AccountTokenCreateRequest,
     AccountTokenResponse,
     AccountTokenStatusRequest,
+    AIConversationRequest,
+    AIConversationResponse,
     ChannelMappingRequest,
     ChannelMappingResponse,
     AnalyticsOverview,
     ComplianceMethodology,
+    DashboardStatsResponse,
+    FileLoadResponse,
     GuildOptInRequest,
     GuildOptInResponse,
     MessageIngestRequest,
     PatternCaptureRequest,
+    ProxyHealthResponse,
+    ProxyRecord,
     ReplicationControlRequest,
     ReplicationQueueResponse,
     ReplicationResponse,
     ReplicationStartRequest,
     ServerConnectionRequest,
     ServerConnectionResponse,
+    SettingsUpdateRequest,
     SystemStatusResponse,
     UserPrivacyRequest,
 )
 from app.core.config import get_settings
 from app.services.activity_logger import list_recent_activity_events, log_event
+from app.services.ai_chat import AIChatService
 from app.services.cache import CacheService
 from app.services.discord_client import DiscordClient
+from app.services.file_loader import FileLoaderService
 from app.services.openrouter_nlp import OpenRouterNLPService
 from app.services.pattern_analyzer import MessagePatternAnalyzer
 from app.services.privacy import PrivacyService
@@ -39,6 +51,10 @@ from app.services.replication_engine import ConversationReplicationEngine
 from app.services.token_manager import TokenManagerService
 from app.models.research import AccountToken, MessagePattern, ReplicationSession, ServerConnection
 from app.models.research import ChannelMapping, ConversationMirrorEvent, CoordinationEvent, ReplicationQueueItem
+from app.models.research import ProxyEntry
+
+_startup_time = time.time()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 router = APIRouter(prefix='/api/v1')
 settings = get_settings()
@@ -48,6 +64,7 @@ nlp = OpenRouterNLPService()
 discord_client = DiscordClient()
 rate_limiter = DiscordRateLimiter(limit_per_minute=settings.discord_requests_per_minute)
 token_manager = TokenManagerService()
+ai_service = AIChatService()
 pattern_analyzer = MessagePatternAnalyzer()
 replication_engine = ConversationReplicationEngine()
 
@@ -729,6 +746,103 @@ def interaction_flow(guild_id: str, db: Session = Depends(get_db)):
     rows = db.query(MessageResearchEvent.interaction_edges).filter(MessageResearchEvent.guild_id == guild_id).all()
     edges = [edge for row in rows for edge in row[0]]
     return {'edges': edges}
+
+
+# --- File Loading Endpoints ---
+
+@router.post('/accounts/load-file', response_model=FileLoadResponse)
+def load_tokens_from_file(db: Session = Depends(get_db)):
+    loader = FileLoaderService()
+    file_path = str(_PROJECT_ROOT / 't.txt')
+    loaded, errors = loader.load_tokens_file(db, file_path)
+    log_event('tokens_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
+    return FileLoadResponse(loaded=loaded, errors=errors)
+
+
+@router.post('/proxies/load-file', response_model=FileLoadResponse)
+def load_proxies_from_file(db: Session = Depends(get_db)):
+    loader = FileLoaderService()
+    file_path = str(_PROJECT_ROOT / 'p.txt')
+    loaded, errors = loader.load_proxies_file(db, file_path)
+    log_event('proxies_loaded_from_file', {'loaded': loaded, 'error_count': len(errors)})
+    return FileLoadResponse(loaded=loaded, errors=errors)
+
+
+@router.post('/config/load-file')
+def load_api_config():
+    file_path = str(_PROJECT_ROOT / 'api_key.conf')
+    config = FileLoaderService.load_api_config(file_path)
+    log_event('api_config_loaded', {'keys_found': list(config.keys())})
+    return {'status': 'loaded', 'keys': list(config.keys())}
+
+
+@router.get('/proxies/health', response_model=ProxyHealthResponse)
+def proxy_health(db: Session = Depends(get_db)):
+    rows = db.query(ProxyEntry).order_by(ProxyEntry.id.desc()).all()
+    proxies = []
+    for row in rows:
+        total = row.success_count + row.failure_count
+        rate = (row.success_count / total * 100) if total > 0 else 100.0
+        proxies.append(ProxyRecord(
+            id=row.id,
+            host=row.host,
+            port=row.port,
+            username=row.username,
+            is_healthy=row.is_healthy,
+            last_used=row.last_used_at.isoformat() if row.last_used_at else None,
+            success_rate=round(rate, 1),
+        ))
+    healthy = sum(1 for p in proxies if p.is_healthy)
+    return ProxyHealthResponse(
+        total=len(proxies),
+        healthy=healthy,
+        unhealthy=len(proxies) - healthy,
+        proxies=proxies,
+    )
+
+
+@router.post('/ai/chat', response_model=AIConversationResponse)
+async def ai_chat(request: AIConversationRequest):
+    result = await ai_service.chat(
+        message=request.message,
+        conversation_history=request.conversation_history,
+        system_prompt=request.system_prompt,
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+    )
+    log_event('ai_chat_request', {'model': result['model']})
+    return AIConversationResponse(**result)
+
+
+@router.get('/dashboard/stats', response_model=DashboardStatsResponse)
+def dashboard_stats(db: Session = Depends(get_db)):
+    active_accounts = db.query(func.count(AccountToken.id)).filter(AccountToken.is_active.is_(True)).scalar() or 0
+    healthy_accounts = (
+        db.query(func.count(AccountToken.id))
+        .filter(AccountToken.is_active.is_(True), AccountToken.health_status.in_(['healthy', 'unknown']))
+        .scalar()
+        or 0
+    )
+    total_proxies = db.query(func.count(ProxyEntry.id)).scalar() or 0
+    healthy_proxies = db.query(func.count(ProxyEntry.id)).filter(ProxyEntry.is_healthy.is_(True)).scalar() or 0
+    active_syncs = db.query(func.count(ReplicationSession.id)).filter(ReplicationSession.status == 'running').scalar() or 0
+    messages_transferred = db.query(func.count(ConversationMirrorEvent.id)).scalar() or 0
+    return DashboardStatsResponse(
+        active_accounts=active_accounts,
+        healthy_accounts=healthy_accounts,
+        total_proxies=total_proxies,
+        healthy_proxies=healthy_proxies,
+        active_syncs=active_syncs,
+        messages_transferred=messages_transferred,
+        ai_requests_total=0,
+        uptime_seconds=time.time() - _startup_time,
+    )
+
+
+@router.patch('/settings/update')
+def update_settings(request: SettingsUpdateRequest):
+    log_event('settings_update_requested', {'key': request.key})
+    return {'status': 'acknowledged', 'key': request.key, 'note': 'Runtime setting updates require restart for full effect'}
 
 
 @router.get('/compliance/methodology', response_model=ComplianceMethodology)

@@ -1,0 +1,2 @@
+# Discord account tokens - one token per line
+# Example format: MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8
