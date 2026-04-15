@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     discord_requests_per_minute: int = Field(default=45)
 
     openrouter_api_key: str = Field(default='')
-    openrouter_model: str = Field(default='openai/gpt-4o-mini')
+    openrouter_model: str = Field(default='x-ai/grok-4.1-fast')
+    openrouter_max_tokens: int = Field(default=4096)
+    openrouter_temperature: float = Field(default=0.7)
+    openrouter_response_timeout: int = Field(default=30)
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')

@@ -1,0 +1,3 @@
+# Proxy list - one proxy per line
+# Format: host:port:username:password
+# Example: pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso

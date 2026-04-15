@@ -158,3 +158,55 @@ class SystemStatusResponse(BaseModel):
     queue_pending: int
     queue_failed: int
     sessions_completed: int
+
+
+class FileLoadResponse(BaseModel):
+    loaded: int
+    errors: list[str] = Field(default_factory=list)
+
+
+class AIConversationRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    conversation_history: list[dict] = Field(default_factory=list)
+    system_prompt: str = Field(default='You are a helpful Discord community assistant.')
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4096, ge=1, le=16384)
+
+
+class AIConversationResponse(BaseModel):
+    response: str
+    model: str
+    usage: dict = Field(default_factory=dict)
+
+
+class ProxyRecord(BaseModel):
+    id: int
+    host: str
+    port: int
+    username: str
+    is_healthy: bool
+    last_used: str | None = None
+    success_rate: float
+
+
+class ProxyHealthResponse(BaseModel):
+    total: int
+    healthy: int
+    unhealthy: int
+    proxies: list[ProxyRecord]
+
+
+class DashboardStatsResponse(BaseModel):
+    active_accounts: int
+    healthy_accounts: int
+    total_proxies: int
+    healthy_proxies: int
+    active_syncs: int
+    messages_transferred: int
+    ai_requests_total: int
+    uptime_seconds: float
+
+
+class SettingsUpdateRequest(BaseModel):
+    key: str
+    value: str

@@ -16,3 +16,7 @@ frontend/.env
 .DS_Store
 .vscode/
 .idea/
+
+# Credential files (keep examples only)
+*.db
+logs/

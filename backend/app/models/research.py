@@ -160,3 +160,19 @@ class ConversationMirrorEvent(Base):
     responder_account_label = Column(String(128), nullable=False)
     response_time_ms = Column(Integer, nullable=False, default=0)
     replicated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class ProxyEntry(Base):
+    __tablename__ = 'proxy_entry'
+
+    id = Column(Integer, primary_key=True, index=True)
+    host = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=False)
+    username = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=False)
+    is_healthy = Column(Boolean, default=True, nullable=False)
+    health_checked_at = Column(DateTime(timezone=True), nullable=True)
+    success_count = Column(Integer, default=0, nullable=False)
+    failure_count = Column(Integer, default=0, nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
