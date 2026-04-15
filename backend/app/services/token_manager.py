@@ -16,7 +16,9 @@ class TokenManagerService:
         normalized_host = host
         if '://' in normalized_host:
             scheme, normalized_host = normalized_host.split('://', 1)
-        return f'{scheme}://{username}:{password}@{normalized_host}:{port}'
+        if username and password:
+            return f'{scheme}://{username}:{password}@{normalized_host}:{port}'
+        return f'{scheme}://{normalized_host}:{port}'
 
     @staticmethod
     def token_hash(token_value: str) -> str:
@@ -46,8 +48,8 @@ class TokenManagerService:
                 if not extracted:
                     raise ValueError('Token is missing from email:password:token input')
                 return extracted, identity.strip()
-            elif separator:
-                raise ValueError('Email portion of email:password:token format must contain @ symbol')
+            # No '@' in the first segment — treat the entire value as a plain token.
+            # This handles tokens that legitimately contain ':' characters.
 
         return value, None
 
@@ -69,12 +71,15 @@ class TokenManagerService:
             raw_value = remainder
 
         parts = raw_value.split(':', 3)
-        if len(parts) != 4:
-            raise ValueError('Proxy format must be host:port:username:password')
+        if len(parts) not in (2, 4):
+            raise ValueError('Proxy format must be host:port or host:port:username:password')
 
-        host, port_text, username, password = (part.strip() for part in parts)
-        if not host or not username or not password:
-            raise ValueError('Proxy format must include host, username, and password')
+        host = parts[0].strip()
+        port_text = parts[1].strip()
+        username = parts[2].strip() if len(parts) > 2 else ''
+        password = parts[3].strip() if len(parts) > 3 else ''
+        if not host:
+            raise ValueError('Proxy host cannot be empty')
         try:
             port = int(port_text)
         except ValueError as exc:

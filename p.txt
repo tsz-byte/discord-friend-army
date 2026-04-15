@@ -1,3 +1,5 @@
 # Proxy list - one proxy per line
-# Format: host:port:username:password
+# Format: host:port:username:password  (authenticated)
+#     or: host:port                    (unauthenticated)
 # Example: pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
+# Example: 192.168.1.100:8080

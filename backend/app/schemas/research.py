@@ -75,6 +75,7 @@ class ServerConnectionRequest(BaseModel):
     guild_id: str
     guild_name: str
     role: str = Field(pattern='^(source|target)$')
+    invite_link: str | None = Field(default=None, max_length=512)
     enabled: bool = True
     research_scope: str = 'educational_replication'
 
@@ -84,6 +85,7 @@ class ServerConnectionResponse(BaseModel):
     guild_id: str
     guild_name: str
     role: str
+    invite_link: str | None = None
     enabled: bool
     joined_status: str
     research_scope: str
