@@ -995,6 +995,16 @@ async def join_server_with_onboarding(
 
     results = []
     for token_row in tokens:
+        checked = await token_manager.health_check(db, token_row)
+        if checked.health_status != 'healthy':
+            results.append({
+                'token_id': token_row.id,
+                'label': token_row.label,
+                'status': 'skipped',
+                'detail': f'token health is {checked.health_status}',
+            })
+            continue
+
         proxy_url: str | None = None
         if token_row.proxy_host and token_row.proxy_port:
             proxy_url = token_manager.build_proxy_url(

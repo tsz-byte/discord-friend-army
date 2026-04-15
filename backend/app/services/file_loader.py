@@ -40,6 +40,7 @@ class FileLoaderService:
     def load_proxies_file(self, db: Session, file_path: str) -> tuple[int, list[str]]:
         if not os.path.isfile(file_path):
             return 0, [f'Proxy file not found: {file_path}']
+        logger.info('Loading proxies from file: %s', file_path)
         loaded = 0
         errors: list[str] = []
         with open(file_path, 'r', encoding='utf-8') as fh:
@@ -76,7 +77,36 @@ class FileLoaderService:
                     loaded += 1
                 except (ValueError, Exception) as exc:
                     errors.append(f'Line {line_no}: {exc}')
+                    logger.warning('Proxy line failed line=%s error=%s', line_no, exc)
+
+        assigned = self._associate_loaded_proxies_to_tokens(db)
+        logger.info('Proxy load finished: loaded=%s errors=%s associated_tokens=%s', loaded, len(errors), assigned)
         return loaded, errors
+
+    def _associate_loaded_proxies_to_tokens(self, db: Session) -> int:
+        proxies = db.query(ProxyEntry).order_by(ProxyEntry.id.asc()).all()
+        tokens = db.query(AccountToken).order_by(AccountToken.id.asc()).all()
+        if not proxies or not tokens:
+            return 0
+
+        changed = 0
+        for index, token in enumerate(tokens):
+            proxy = proxies[index % len(proxies)]
+            if (
+                token.proxy_host == proxy.host
+                and token.proxy_port == proxy.port
+                and token.proxy_username == proxy.username
+                and token.proxy_password == proxy.password
+            ):
+                continue
+            token.proxy_host = proxy.host
+            token.proxy_port = proxy.port
+            token.proxy_username = proxy.username
+            token.proxy_password = proxy.password
+            changed += 1
+        if changed:
+            db.commit()
+        return changed
 
     @staticmethod
     def load_api_config(file_path: str) -> dict:
