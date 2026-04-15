@@ -9,11 +9,30 @@ from app.core.config import get_settings
 settings = get_settings()
 logger = logging.getLogger('discord_research.db')
 FALLBACK_SQLITE_DSN = 'sqlite:///./discord_research.db'
+POOL_RECYCLE_SECONDS = 1800  # 30 minutes
+
+
+def _engine_kwargs(dsn: str) -> dict:
+    if dsn.startswith('sqlite'):
+        return {
+            'future': True,
+            'connect_args': {'check_same_thread': False},
+            'pool_pre_ping': True,
+            'pool_recycle': POOL_RECYCLE_SECONDS,
+        }
+    return {
+        'future': True,
+        'pool_pre_ping': True,
+        'pool_recycle': POOL_RECYCLE_SECONDS,
+        'pool_size': 10,
+        'max_overflow': 20,
+        'pool_timeout': 30,
+    }
 
 
 def _create_resilient_engine():
     configured_dsn = settings.postgres_dsn
-    primary_engine = create_engine(configured_dsn, future=True)
+    primary_engine = create_engine(configured_dsn, **_engine_kwargs(configured_dsn))
     if configured_dsn.startswith('sqlite'):
         # SQLite file DBs are created on first write; this keeps startup lightweight and uses configured DSN directly.
         return primary_engine
@@ -34,7 +53,7 @@ def _create_resilient_engine():
                 },
             },
         )
-        return create_engine(FALLBACK_SQLITE_DSN, future=True)
+        return create_engine(FALLBACK_SQLITE_DSN, **_engine_kwargs(FALLBACK_SQLITE_DSN))
 
 
 engine = _create_resilient_engine()

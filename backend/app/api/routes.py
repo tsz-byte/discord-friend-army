@@ -3,7 +3,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -29,15 +29,21 @@ from app.schemas.research import (
     PatternCaptureRequest,
     ProxyHealthResponse,
     ProxyRecord,
+    RealtimeEventRecord,
+    RealtimeStartRequest,
+    RealtimeStatusResponse,
     ReplicationControlRequest,
     ReplicationQueueResponse,
     ReplicationResponse,
     ReplicationStartRequest,
+    SendMessageRequest,
+    SendMessageResponse,
     ServerConnectionRequest,
     ServerConnectionResponse,
     SettingsBulkUpdateRequest,
     SettingsUpdateRequest,
     SystemStatusResponse,
+    ToggleMappingRealtimeRequest,
     UserPrivacyRequest,
 )
 from app.core.config import get_settings
@@ -54,7 +60,7 @@ from app.services.replication_engine import ConversationReplicationEngine
 from app.services.token_manager import TokenManagerService
 from app.models.research import AccountToken, AppSetting, MessagePattern, ReplicationSession, ServerConnection
 from app.models.research import ChannelMapping, ConversationMirrorEvent, CoordinationEvent, ReplicationQueueItem
-from app.models.research import ProxyEntry
+from app.models.research import ProxyEntry, RealtimeTransferEvent
 
 _startup_time = time.time()
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -245,6 +251,58 @@ def set_account_token_status(token_id: int, request: AccountTokenStatusRequest, 
     db.refresh(row)
     log_event('account_token_status_updated', {'token_id': token_id, 'is_active': row.is_active})
     return serialize_token_record(row)
+
+
+@router.delete('/replication/tokens/{token_id}', status_code=status.HTTP_204_NO_CONTENT)
+def delete_account_token(token_id: int, db: Session = Depends(get_db)):
+    """Permanently remove a token record."""
+    row = db.query(AccountToken).filter(AccountToken.id == token_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Token not found')
+    db.delete(row)
+    db.commit()
+    log_event('account_token_deleted', {'token_id': token_id})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post('/replication/tokens/{token_id}/send-message', response_model=SendMessageResponse)
+async def send_message_from_token(
+    token_id: int,
+    request: SendMessageRequest,
+    db: Session = Depends(get_db),
+):
+    """Send a Discord message from a specific account token."""
+    row = db.query(AccountToken).filter(AccountToken.id == token_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Token not found')
+    if not row.is_active:
+        raise HTTPException(status_code=400, detail='Token is disabled')
+
+    proxy_url: str | None = None
+    if row.proxy_host and row.proxy_port:
+        proxy_url = token_manager.build_proxy_url(
+            host=row.proxy_host,
+            port=row.proxy_port,
+            username=row.proxy_username or '',
+            password=row.proxy_password or '',
+        )
+
+    result = await discord_client.send_message(
+        channel_id=request.channel_id,
+        content=request.content,
+        token=row.token_value,
+        proxy_url=proxy_url,
+    )
+    row.usage_count = (row.usage_count or 0) + 1
+    db.commit()
+    log_event(
+        'direct_message_sent',
+        {'token_id': token_id, 'channel_id': request.channel_id, 'status': result.get('status')},
+    )
+    return SendMessageResponse(
+        status=result.get('status', 'unknown'),
+        detail=str(result.get('detail', '')) if result.get('detail') else None,
+    )
 
 
 @router.post('/replication/servers', response_model=ServerConnectionResponse)
@@ -995,6 +1053,16 @@ async def join_server_with_onboarding(
 
     results = []
     for token_row in tokens:
+        checked = await token_manager.health_check(db, token_row)
+        if checked.health_status != 'healthy':
+            results.append({
+                'token_id': token_row.id,
+                'label': token_row.label,
+                'status': 'skipped',
+                'detail': f'token health is {checked.health_status}',
+            })
+            continue
+
         proxy_url: str | None = None
         if token_row.proxy_host and token_row.proxy_port:
             proxy_url = token_manager.build_proxy_url(
@@ -1036,3 +1104,92 @@ def compliance_methodology() -> ComplianceMethodology:
             'Educational conversation replication session metadata with account masking',
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Channel mapping realtime toggle
+# ---------------------------------------------------------------------------
+
+@router.patch('/replication/channel-mappings/{mapping_id}/realtime')
+def toggle_mapping_realtime(
+    mapping_id: int,
+    request: ToggleMappingRealtimeRequest,
+    db: Session = Depends(get_db),
+):
+    """Enable or disable real-time transfer for a specific channel mapping."""
+    row = db.query(ChannelMapping).filter(ChannelMapping.id == mapping_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Channel mapping not found')
+    settings = dict(row.settings or {})
+    settings['realtime_enabled'] = request.realtime_enabled
+    row.settings = settings
+    db.commit()
+    log_event(
+        'realtime_mapping_toggled',
+        {'mapping_id': mapping_id, 'realtime_enabled': request.realtime_enabled},
+    )
+    return {'mapping_id': mapping_id, 'realtime_enabled': request.realtime_enabled}
+
+
+# ---------------------------------------------------------------------------
+# Real-time listener control endpoints
+# ---------------------------------------------------------------------------
+
+@router.post('/realtime/start', response_model=RealtimeStatusResponse)
+async def realtime_start(
+    request: RealtimeStartRequest = Body(default_factory=RealtimeStartRequest),
+):
+    """Start the real-time channel listener."""
+    from app.services import realtime_listener
+
+    result = realtime_listener.start_listener(interval_ms=request.interval_ms)
+    log_event('realtime_listener_started', {'interval_ms': request.interval_ms})
+    return RealtimeStatusResponse(**result)
+
+
+@router.post('/realtime/stop', response_model=RealtimeStatusResponse)
+async def realtime_stop():
+    """Stop the real-time channel listener."""
+    from app.services import realtime_listener
+
+    result = realtime_listener.stop_listener()
+    log_event('realtime_listener_stopped', {})
+    return RealtimeStatusResponse(**result)
+
+
+@router.get('/realtime/status', response_model=RealtimeStatusResponse)
+def realtime_status():
+    """Get the current status of the real-time channel listener."""
+    from app.services import realtime_listener
+
+    return RealtimeStatusResponse(**realtime_listener.get_status())
+
+
+@router.get('/realtime/events', response_model=list[RealtimeEventRecord])
+def realtime_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Return recent real-time transfer events (newest first)."""
+    rows = (
+        db.query(RealtimeTransferEvent)
+        .order_by(RealtimeTransferEvent.transferred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        RealtimeEventRecord(
+            id=r.id,
+            source_channel_id=r.source_channel_id,
+            target_channel_id=r.target_channel_id,
+            source_message_id=r.source_message_id,
+            source_author=r.source_author,
+            content=r.content,
+            token_id=r.token_id,
+            token_label=r.token_label,
+            status=r.status,
+            error=r.error,
+            transferred_at=r.transferred_at,
+        )
+        for r in rows
+    ]

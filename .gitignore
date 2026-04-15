@@ -23,3 +23,5 @@ backend/static/
 # Credential files (keep examples only)
 *.db
 logs/
+app.log
+errors.txt

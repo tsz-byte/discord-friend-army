@@ -106,6 +106,25 @@ async def _dispatch_queued_items(db: Session) -> int:
             item.status = 'dispatched'
             item.error = None
             dispatched += 1
+        elif (
+            result.get('status') == 'failed'
+            and result.get('code') == 403
+            and '50001' in str(result.get('detail', ''))
+        ):
+            onboarding_ok = await discord_client.complete_onboarding(
+                guild_id=item.target_guild_id,
+                token=token.token_value,
+                proxy_url=proxy_url,
+            )
+            if onboarding_ok:
+                item.status = 'queued'
+                item.error = 'missing_access: onboarding completed, queued for retry'
+            else:
+                item.status = 'failed'
+                item.error = 'missing_access: onboarding retry failed'
+            logger.warning('dispatch_queued_items: item %d missing access (onboarding_ok=%s)', item.id, onboarding_ok)
+            db.commit()
+            continue
         elif result.get('code') == 429:
             # Rate-limited: leave queued so it is retried next cycle.
             item.status = 'queued'
@@ -115,6 +134,8 @@ async def _dispatch_queued_items(db: Session) -> int:
         else:
             item.status = 'failed'
             item.error = f"{result.get('status')}: {result.get('detail', '')}"
+            if result.get('code') == 401:
+                token.health_status = 'invalid'
             logger.error(
                 'dispatch_queued_items: item %d failed — %s',
                 item.id,

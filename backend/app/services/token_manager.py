@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
+import random
 from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.models.research import AccountToken
+
+logger = logging.getLogger('discord_research.token_manager')
+RETRY_BASE_DELAY_SECONDS = 0.5
+MIN_TOKEN_LENGTH = 20  # Shortest plausible Discord user token length
 
 
 class TokenManagerService:
@@ -35,6 +42,8 @@ class TokenManagerService:
         value = raw_token_value.strip()
         if not value:
             raise ValueError('Token value cannot be empty')
+        if value.lower().startswith('bot '):
+            raise ValueError('User token must not include "Bot " prefix')
         if ':' in value:
             identity, separator, remainder = value.partition(':')
             if separator and '@' in identity:
@@ -47,11 +56,20 @@ class TokenManagerService:
                 extracted = extracted.strip()
                 if not extracted:
                     raise ValueError('Token is missing from email:password:token input')
+                TokenManagerService._validate_token_format(extracted)
                 return extracted, identity.strip()
             # No '@' in the first segment — treat the entire value as a plain token.
             # This handles tokens that legitimately contain ':' characters.
 
+        TokenManagerService._validate_token_format(value)
         return value, None
+
+    @staticmethod
+    def _validate_token_format(token_value: str) -> None:
+        if len(token_value) < MIN_TOKEN_LENGTH:
+            raise ValueError('Token value is too short to be a valid Discord user token')
+        if not token_value.startswith('mfa.') and token_value.count('.') < 2:
+            raise ValueError('Token value format looks invalid for Discord user tokens')
 
     @staticmethod
     def parse_proxy(proxy_value: str | None) -> dict | None:
@@ -152,17 +170,52 @@ class TokenManagerService:
                 username=token.proxy_username,
                 password=token.proxy_password,
             )
-        try:
-            async with httpx.AsyncClient(timeout=15, proxy=proxy_url) as client:
-                response = await client.get('https://discord.com/api/v10/users/@me', headers=headers)
-            token.health_status = 'healthy' if response.status_code == 200 else 'invalid'
-        except httpx.HTTPError:
-            token.health_status = 'unreachable'
+        token.health_status = 'unknown'
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=15, proxy=proxy_url) as client:
+                    response = await client.get('https://discord.com/api/v10/users/@me', headers=headers)
+                if response.status_code == 200:
+                    payload = response.json()
+                    username = payload.get('global_name') or payload.get('username')
+                    if username:
+                        token.source_identity = username
+                    token.health_status = 'healthy'
+                    break
+                if response.status_code == 401:
+                    token.health_status = 'invalid'
+                    break
+                if response.status_code == 429 and attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                if response.status_code >= 500 and attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                token.health_status = 'invalid'
+                logger.warning(
+                    'health_check non-success token_id=%s status=%s body=%s',
+                    token.id,
+                    response.status_code,
+                    response.text[:200],
+                )
+                break
+            except httpx.HTTPError as exc:
+                if attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                token.health_status = 'unreachable'
+                logger.warning('health_check request failed token_id=%s error=%s', token.id, exc)
 
         token.health_checked_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(token)
         return token
+
+    @staticmethod
+    async def _sleep_before_retry(attempt: int) -> None:
+        base = min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+        await asyncio.sleep(base + random.uniform(0.0, 0.2))
 
     def pick_for_rotation(self, db: Session) -> AccountToken | None:
         records = (

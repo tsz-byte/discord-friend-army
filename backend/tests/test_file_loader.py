@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.session import Base
 from app.services.file_loader import FileLoaderService
+from app.services.token_manager import TokenManagerService
 
 
 def _make_db():
@@ -59,6 +60,39 @@ def test_load_proxies_missing_file():
     loaded, errors = loader.load_proxies_file(db, '/nonexistent/p.txt')
     assert loaded == 0
     assert len(errors) == 1
+
+
+def test_load_proxies_file_associates_tokens():
+    db = _make_db()
+    token_manager = TokenManagerService()
+    token_1 = token_manager.upsert_token(
+        db=db,
+        label='token-1',
+        raw_token_value='MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE',
+        rotation_priority=10,
+    )
+    token_2 = token_manager.upsert_token(
+        db=db,
+        label='token-2',
+        raw_token_value='MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8',
+        rotation_priority=20,
+    )
+    loader = FileLoaderService()
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write('pr-eu.proxies.fo:13337:session-1:password\n')
+        f.write('pr-eu.proxies.fo:13337:session-2:password\n')
+    try:
+        loaded, errors = loader.load_proxies_file(db, f.name)
+        assert loaded == 2
+        assert errors == []
+        db.refresh(token_1)
+        db.refresh(token_2)
+        assert token_1.proxy_host == 'pr-eu.proxies.fo'
+        assert token_1.proxy_port == 13337
+        assert token_2.proxy_host == 'pr-eu.proxies.fo'
+        assert token_2.proxy_port == 13337
+    finally:
+        os.unlink(f.name)
 
 
 def test_load_api_config():

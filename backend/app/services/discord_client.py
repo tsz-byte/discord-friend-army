@@ -1,10 +1,16 @@
+import asyncio
+import json
 import logging
+import random
 
 import httpx
 
 from app.core.config import get_settings
 
 logger = logging.getLogger('discord_research.discord_client')
+RETRY_BASE_DELAY_SECONDS = 0.5
+RETRY_MAX_SLEEP_SECONDS = 2.0
+RETRY_JITTER_SECONDS = 0.2
 
 
 class DiscordClient:
@@ -84,24 +90,38 @@ class DiscordClient:
         }
         headers = {'Authorization': token, 'Content-Type': 'application/json'}
 
+        max_attempts = 3
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
-            try:
-                resp = await client.post(
-                    f'{self.base_url}/guilds/{guild_id}/complete-onboarding',
-                    headers=headers,
-                    json=payload,
-                )
-                if resp.status_code in (200, 201, 204):
-                    logger.info('Onboarding completed for guild %s', guild_id)
-                    return True
-                logger.warning(
-                    'complete_onboarding guild=%s status=%s body=%s',
-                    guild_id,
-                    resp.status_code,
-                    resp.text[:200],
-                )
-            except httpx.HTTPError as exc:
-                logger.warning('complete_onboarding HTTP error guild=%s: %s', guild_id, exc)
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = await client.post(
+                        f'{self.base_url}/guilds/{guild_id}/complete-onboarding',
+                        headers=headers,
+                        json=payload,
+                    )
+                    if resp.status_code in (200, 201, 204):
+                        logger.info('Onboarding completed for guild %s', guild_id)
+                        return True
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    if resp.status_code == 403:
+                        error_payload = self._response_error_payload(resp)
+                        if error_payload.get('code') == 50001:
+                            logger.info('Onboarding not available or no access for guild %s', guild_id)
+                            return True
+                    logger.warning(
+                        'complete_onboarding guild=%s status=%s body=%s',
+                        guild_id,
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    break
+                except httpx.HTTPError as exc:
+                    if attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    logger.warning('complete_onboarding HTTP error guild=%s: %s', guild_id, exc)
         return False
 
     async def join_guild_via_invite(
@@ -122,32 +142,38 @@ class DiscordClient:
             code = code.rsplit('/', 1)[-1]
 
         headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        max_attempts = 3
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
-            try:
-                resp = await client.post(
-                    f'{self.base_url}/invites/{code}',
-                    headers=headers,
-                    json={},
-                )
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    guild_info = data.get('guild') or {}
-                    guild_id = guild_info.get('id') or data.get('guild_id', '')
-                    if guild_id:
-                        onboarding_ok = await self.complete_onboarding(guild_id, token, proxy_url)
-                        logger.info(
-                            'Joined guild %s (onboarding_ok=%s)', guild_id, onboarding_ok
-                        )
-                    return {'status': 'joined', 'guild': guild_info}
-                if resp.status_code == 204:
-                    return {'status': 'already_joined'}
-                return {
-                    'status': 'failed',
-                    'code': resp.status_code,
-                    'detail': resp.text[:200],
-                }
-            except httpx.HTTPError as exc:
-                return {'status': 'error', 'detail': str(exc)}
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = await client.post(
+                        f'{self.base_url}/invites/{code}',
+                        headers=headers,
+                        json={},
+                    )
+                    if resp.status_code in (200, 201):
+                        data = resp.json()
+                        guild_info = data.get('guild') or {}
+                        guild_id = guild_info.get('id') or data.get('guild_id', '')
+                        if guild_id:
+                            onboarding_ok = await self.complete_onboarding(guild_id, token, proxy_url)
+                            logger.info('Joined guild %s (onboarding_ok=%s)', guild_id, onboarding_ok)
+                        return {'status': 'joined', 'guild': guild_info}
+                    if resp.status_code == 204:
+                        return {'status': 'already_joined'}
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {
+                        'status': 'failed',
+                        'code': resp.status_code,
+                        'detail': json.dumps(self._response_error_payload(resp), ensure_ascii=False),
+                    }
+                except httpx.HTTPError as exc:
+                    if attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {'status': 'error', 'detail': str(exc)}
 
     async def send_message(
         self,
@@ -204,3 +230,55 @@ class DiscordClient:
             except httpx.HTTPError as exc:
                 logger.debug('get_guild_members error guild=%s: %s', guild_id, exc)
         return []
+
+    async def get_channel_messages(
+        self,
+        channel_id: str,
+        token: str,
+        after: str | None = None,
+        limit: int = 50,
+        proxy_url: str | None = None,
+    ) -> list[dict]:
+        """Fetch recent messages from a Discord channel using a user token.
+
+        Returns messages in ascending order (oldest first).  Returns an empty
+        list on any error so callers can degrade gracefully.
+        """
+        headers = {'Authorization': token}
+        params: dict = {'limit': min(limit, 100)}
+        if after:
+            params['after'] = after
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(
+                    f'{self.base_url}/channels/{channel_id}/messages',
+                    headers=headers,
+                    params=params,
+                )
+                if resp.status_code == 200:
+                    messages = resp.json()
+                    # Discord returns newest first; sort to oldest first for sequential processing.
+                    messages.sort(key=lambda m: m.get('id', '0'))
+                    return messages
+                logger.debug(
+                    'get_channel_messages channel=%s status=%s',
+                    channel_id,
+                    resp.status_code,
+                )
+            except httpx.HTTPError as exc:
+                logger.debug('get_channel_messages error channel=%s: %s', channel_id, exc)
+        return []
+
+    @staticmethod
+    async def _sleep_before_retry(attempt: int) -> None:
+        await asyncio.sleep(min(RETRY_MAX_SLEEP_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, RETRY_JITTER_SECONDS))
+
+    @staticmethod
+    def _response_error_payload(response: httpx.Response) -> dict:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+        except ValueError:
+            pass
+        return {'message': response.text[:200]}

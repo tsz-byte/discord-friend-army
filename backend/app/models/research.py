@@ -179,6 +179,22 @@ class ProxyEntry(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class RealtimeTransferEvent(Base):
+    __tablename__ = 'realtime_transfer_event'
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_channel_id = Column(String(32), nullable=False, index=True)
+    target_channel_id = Column(String(32), nullable=False, index=True)
+    source_message_id = Column(String(32), nullable=False, index=True)
+    source_author = Column(String(255), nullable=True)
+    content = Column(Text, nullable=False)
+    token_id = Column(Integer, nullable=True, index=True)
+    token_label = Column(String(128), nullable=True)
+    status = Column(String(32), nullable=False, default='pending')
+    error = Column(Text, nullable=True)
+    transferred_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
 class AppSetting(Base):
     """Runtime-editable key/value settings stored in the database.
 

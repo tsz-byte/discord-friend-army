@@ -227,3 +227,42 @@ class AutoLoopStatusResponse(BaseModel):
     enabled: bool
     interval_seconds: int
     task_alive: bool
+
+
+class SendMessageRequest(BaseModel):
+    channel_id: str = Field(min_length=1, max_length=32)
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class SendMessageResponse(BaseModel):
+    status: str
+    detail: str | None = None
+
+
+class RealtimeStartRequest(BaseModel):
+    interval_ms: int = Field(default=2000, ge=500, le=60000)
+
+
+class RealtimeStatusResponse(BaseModel):
+    active: bool
+    interval_ms: int
+    task_alive: bool
+    stats: dict
+
+
+class RealtimeEventRecord(BaseModel):
+    id: int
+    source_channel_id: str
+    target_channel_id: str
+    source_message_id: str
+    source_author: str | None = None
+    content: str
+    token_id: int | None = None
+    token_label: str | None = None
+    status: str
+    error: str | None = None
+    transferred_at: datetime
+
+
+class ToggleMappingRealtimeRequest(BaseModel):
+    realtime_enabled: bool

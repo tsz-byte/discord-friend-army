@@ -25,6 +25,8 @@ type ProxyRecord = { id: number; host: string; port: number; username: string; i
 type ProxyHealth = { total: number; healthy: number; unhealthy: number; proxies: ProxyRecord[] }
 type AppSetting = { key: string; value: string | null }
 type AutoLoopStatus = { enabled: boolean; interval_seconds: number; task_alive: boolean }
+type RealtimeStatus = { active: boolean; interval_ms: number; task_alive: boolean; stats: { transferred: number; failed: number; last_transfer: string | null; started_at: string | null } }
+type RealtimeEvent = { id: number; source_channel_id: string; target_channel_id: string; source_message_id: string; source_author: string | null; content: string; token_label: string | null; status: string; error: string | null; transferred_at: string }
 
 type Tab = 'overview' | 'accounts' | 'proxies' | 'servers' | 'ai' | 'sync' | 'activity' | 'settings'
 
@@ -90,6 +92,17 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({})
   const [autoLoopStatus, setAutoLoopStatus] = useState<AutoLoopStatus | null>(null)
   const [autoLoopInterval, setAutoLoopInterval] = useState(180)
+
+  // Real-time transfer state
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus | null>(null)
+  const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([])
+  const [realtimeIntervalMs, setRealtimeIntervalMs] = useState(2000)
+
+  // Send message dialog state (per-token)
+  const [sendMsgTokenId, setSendMsgTokenId] = useState<number | null>(null)
+  const [sendMsgChannel, setSendMsgChannel] = useState('')
+  const [sendMsgContent, setSendMsgContent] = useState('')
+  const [sendMsgLoading, setSendMsgLoading] = useState(false)
 
   const trendSvgRef = useRef<SVGSVGElement | null>(null)
   const flowSvgRef = useRef<SVGSVGElement | null>(null)
@@ -157,22 +170,34 @@ function App() {
     } catch { /* non-fatal */ }
   }, [])
 
+  const loadRealtimeData = useCallback(async () => {
+    try {
+      const [statusRes, eventsRes] = await Promise.all([
+        fetch(`${API_BASE}/realtime/status`),
+        fetch(`${API_BASE}/realtime/events?limit=50`),
+      ])
+      if (statusRes.ok) setRealtimeStatus((await statusRes.json()) as RealtimeStatus)
+      if (eventsRes.ok) setRealtimeEvents((await eventsRes.json()) as RealtimeEvent[])
+    } catch { /* non-fatal */ }
+  }, [])
+
   const loadAll = useCallback(async () => {
     setError('')
     try {
-      await Promise.all([loadAnalytics(), loadReplicationData(), loadDashboard(), loadSettings()])
+      await Promise.all([loadAnalytics(), loadReplicationData(), loadDashboard(), loadSettings(), loadRealtimeData()])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error while loading data')
     }
-  }, [loadAnalytics, loadReplicationData, loadDashboard, loadSettings])
+  }, [loadAnalytics, loadReplicationData, loadDashboard, loadSettings, loadRealtimeData])
 
   useEffect(() => { void loadAll() }, [loadAll])
 
-  // Auto-refresh: keep status + activity logs current without a manual reload.
+  // Auto-refresh: keep status + activity logs + realtime current without a manual reload.
   useEffect(() => {
     const id = setInterval(() => {
       void loadDashboard()
       void loadSettings()
+      void loadRealtimeData()
       fetch(`${API_BASE}/replication/logs?limit=80`)
         .then(r => r.ok ? r.json() : null)
         .then(d => { if (d) setActivityLogs(d as ActivityLog[]) })
@@ -181,9 +206,9 @@ function App() {
         .then(r => r.ok ? r.json() : null)
         .then(d => { if (d) setSystemStatus(d as SystemStatus) })
         .catch(() => {})
-    }, 30_000)
+    }, 5_000)
     return () => clearInterval(id)
-  }, [loadDashboard, loadSettings])
+  }, [loadDashboard, loadSettings, loadRealtimeData])
 
   /* ---------- D3 charts ---------- */
   useEffect(() => {
@@ -374,6 +399,68 @@ function App() {
     } catch (err) { setError(err instanceof Error ? err.message : 'Retry error') }
   }
 
+  const deleteToken = async (tokenId: number) => {
+    if (!confirm('Permanently delete this token?')) return
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/replication/tokens/${tokenId}`, { method: 'DELETE' })
+      if (!res.ok && res.status !== 204) throw new Error(`Delete failed (HTTP ${res.status})`)
+      await loadReplicationData()
+      flash('Token deleted')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Delete error') }
+  }
+
+  const sendMessageFromToken = async (tokenId: number) => {
+    if (!sendMsgChannel.trim() || !sendMsgContent.trim()) {
+      setError('Channel ID and message content are required')
+      return
+    }
+    setSendMsgLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/replication/tokens/${tokenId}/send-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel_id: sendMsgChannel.trim(), content: sendMsgContent.trim() }),
+      })
+      const data = await res.json() as { status: string; detail?: string }
+      if (!res.ok || data.status === 'error') throw new Error(data.detail ?? `Send failed (HTTP ${res.status})`)
+      flash(`Message sent (status: ${data.status})`)
+      setSendMsgContent('')
+      setSendMsgTokenId(null)
+      await loadReplicationData()
+    } catch (err) { setError(err instanceof Error ? err.message : 'Send error') }
+    setSendMsgLoading(false)
+  }
+
+  const toggleRealtimeListener = async () => {
+    setError('')
+    try {
+      const isRunning = realtimeStatus?.active && realtimeStatus?.task_alive
+      const url = isRunning ? `${API_BASE}/realtime/stop` : `${API_BASE}/realtime/start`
+      const body = isRunning ? undefined : JSON.stringify({ interval_ms: realtimeIntervalMs })
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      if (!res.ok) throw new Error(`Realtime toggle failed (HTTP ${res.status})`)
+      const data = await res.json() as RealtimeStatus
+      setRealtimeStatus(data)
+      flash(`Real-time listener ${data.active ? 'started' : 'stopped'}`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Realtime toggle error') }
+  }
+
+  const toggleMappingRealtime = async (mappingId: number, currentlyEnabled: boolean) => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/replication/channel-mappings/${mappingId}/realtime`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realtime_enabled: !currentlyEnabled }),
+      })
+      if (!res.ok) throw new Error(`Mapping realtime toggle failed (HTTP ${res.status})`)
+      await loadReplicationData()
+      flash(`Realtime ${!currentlyEnabled ? 'enabled' : 'disabled'} for mapping #${mappingId}`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Toggle error') }
+  }
+
   const sendAiMessage = async () => {
     if (!aiMessage.trim()) return
     setAiLoading(true); setAiResponse(''); setError('')
@@ -544,18 +631,46 @@ function App() {
                   <div key={token.id} className="token-card">
                     <div className="token-card-header">
                       {healthDot(token.health_status)}
-                      <strong>{token.label}</strong>
+                      <strong>{token.source_identity ?? token.label}</strong>
+                      {token.source_identity && <span style={{ color: '#9ca3af', fontSize: 12 }}>({token.label})</span>}
                       <span className="token-preview">{token.token_preview}</span>
                     </div>
                     <div className="token-card-meta">
-                      <span>Identity: {token.source_identity ?? 'token-only'}</span>
+                      <span>Status: <strong style={{ color: token.health_status === 'healthy' ? '#22c55e' : token.health_status === 'invalid' ? '#ef4444' : '#facc15' }}>{token.health_status}</strong></span>
                       <span>Proxy: {token.proxy_preview ?? 'none'}</span>
                       <span>Usage: {token.usage_count} | Priority: {token.rotation_priority}</span>
                     </div>
                     <div className="token-card-actions">
                       <button className="btn-xs" onClick={() => void runHealthCheck(token.id)}>🔍 Health Check</button>
                       <button className="btn-xs btn-outline" onClick={() => void toggleToken(token.id, token.is_active)}>{token.is_active ? '⏸ Disable' : '▶ Enable'}</button>
+                      <button className="btn-xs" style={{ background: '#1d4ed8' }} onClick={() => { setSendMsgTokenId(token.id); setSendMsgContent(''); setSendMsgChannel('') }}>✉️ Send Msg</button>
+                      <button className="btn-xs" style={{ background: '#7f1d1d', color: '#fca5a5' }} onClick={() => void deleteToken(token.id)}>🗑 Delete</button>
                     </div>
+                    {sendMsgTokenId === token.id && (
+                      <div className="send-msg-form" style={{ marginTop: 10, padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                          <input
+                            placeholder="Channel ID"
+                            value={sendMsgChannel}
+                            onChange={e => setSendMsgChannel(e.target.value)}
+                            style={{ flex: '0 0 160px' }}
+                          />
+                          <input
+                            placeholder="Message content..."
+                            value={sendMsgContent}
+                            onChange={e => setSendMsgContent(e.target.value)}
+                            style={{ flex: 1 }}
+                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessageFromToken(token.id) } }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button className="btn-xs btn-primary" disabled={sendMsgLoading} onClick={() => void sendMessageFromToken(token.id)}>
+                            {sendMsgLoading ? '⏳ Sending...' : '🚀 Send'}
+                          </button>
+                          <button className="btn-xs btn-outline" onClick={() => setSendMsgTokenId(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -580,7 +695,7 @@ function App() {
 
             <section className="panel">
               <h3>📋 Proxy List</h3>
-              {!proxyHealth?.proxies.length && <p className="empty-text">No proxies loaded. Use &quot;Load from p.txt&quot; to import proxies.</p>}
+              {!proxyHealth?.proxies.length && <p className="empty-text">No proxies loaded. Use &ldquo;Load from p.txt&rdquo; to import proxies.</p>}
               <div className="proxy-list">
                 {proxyHealth?.proxies.map((proxy) => (
                   <div key={proxy.id} className="proxy-card">
@@ -681,12 +796,31 @@ function App() {
             <section className="panel">
               <h3>Channel Mappings ({mappings.length})</h3>
               <div className="mapping-list">
-                {mappings.map((m) => (
-                  <div key={m.id} className="mapping-card">
-                    <strong>{m.source_channel_id}</strong> → <strong>{m.target_channel_id}</strong>
-                    <span className="mapping-meta">{m.source_guild_id} → {m.target_guild_id}</span>
-                  </div>
-                ))}
+                {mappings.map((m) => {
+                  const rtEnabled = !!(m.settings as Record<string, unknown>)?.realtime_enabled
+                  return (
+                    <div key={m.id} className="mapping-card">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <strong>{m.source_channel_id}</strong> → <strong>{m.target_channel_id}</strong>
+                          <span className="mapping-meta" style={{ display: 'block' }}>{m.source_guild_id} → {m.target_guild_id}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 11, color: rtEnabled ? '#4ade80' : '#9ca3af' }}>
+                            {rtEnabled ? '🟢 RT' : '⚫ RT'}
+                          </span>
+                          <button
+                            className={`btn-xs ${rtEnabled ? 'btn-outline' : ''}`}
+                            style={rtEnabled ? { borderColor: '#4ade80', color: '#4ade80' } : {}}
+                            onClick={() => void toggleMappingRealtime(m.id, rtEnabled)}
+                          >
+                            {rtEnabled ? 'Disable RT' : 'Enable RT'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
                 {!mappings.length && <p className="empty-text">No channel mappings configured.</p>}
               </div>
             </section>
@@ -724,6 +858,66 @@ function App() {
         {/* ===== SYNC TAB ===== */}
         {activeTab === 'sync' && (
           <div className="tab-content">
+            {/* Real-Time Transfer Panel */}
+            <section className="panel">
+              <div className="panel-header">
+                <h3>⚡ Real-Time Transfer</h3>
+                <span style={{
+                  padding: '2px 10px', borderRadius: 12, fontSize: 13, fontWeight: 700,
+                  background: realtimeStatus?.active && realtimeStatus?.task_alive ? '#16a34a22' : '#dc262622',
+                  color: realtimeStatus?.active && realtimeStatus?.task_alive ? '#4ade80' : '#f87171',
+                }}>
+                  {realtimeStatus?.active && realtimeStatus?.task_alive ? '● Live' : '○ Stopped'}
+                </span>
+              </div>
+              <p style={{ color: '#9ca3af', fontSize: 13, marginBottom: 12 }}>
+                Monitors source channel(s) continuously and forwards every new message to the target channel using round-robin token rotation.
+                Enable &ldquo;RT&rdquo; on channel mappings in the Servers tab to activate per-mapping real-time transfer.
+              </p>
+              <div className="stat-cards mini" style={{ marginBottom: 12 }}>
+                <div className="stat-card-mini green-bg"><strong>{realtimeStatus?.stats?.transferred ?? 0}</strong><span>Transferred</span></div>
+                <div className="stat-card-mini red-bg"><strong>{realtimeStatus?.stats?.failed ?? 0}</strong><span>Failed</span></div>
+                <div className="stat-card-mini"><strong>{realtimeStatus?.interval_ms ?? 2000}ms</strong><span>Poll Interval</span></div>
+                <div className="stat-card-mini"><strong>{realtimeStatus?.stats?.last_transfer ? new Date(realtimeStatus.stats.last_transfer).toLocaleTimeString() : '—'}</strong><span>Last Transfer</span></div>
+              </div>
+              <div className="form-row" style={{ gap: 10, alignItems: 'center' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  Poll interval (ms):
+                  <input
+                    type="number" min={500} max={60000} value={realtimeIntervalMs}
+                    onChange={e => setRealtimeIntervalMs(Number(e.target.value))}
+                    style={{ width: 90 }}
+                    disabled={realtimeStatus?.active && realtimeStatus?.task_alive}
+                  />
+                </label>
+                <button
+                  className={realtimeStatus?.active && realtimeStatus?.task_alive ? 'btn-danger' : 'btn-primary'}
+                  onClick={() => void toggleRealtimeListener()}
+                >
+                  {realtimeStatus?.active && realtimeStatus?.task_alive ? '⏹ Stop Real-Time' : '▶ Start Real-Time'}
+                </button>
+                <button className="btn-secondary" onClick={() => void loadRealtimeData()}>🔄 Refresh</button>
+              </div>
+            </section>
+
+            {/* Recent transfer events */}
+            <section className="panel">
+              <h3>📡 Recent Real-Time Transfers ({realtimeEvents.length})</h3>
+              {!realtimeEvents.length && <p className="empty-text">No real-time transfers yet. Start the listener and enable RT on a channel mapping.</p>}
+              <div className="queue-list">
+                {realtimeEvents.slice(0, 20).map(ev => (
+                  <div key={ev.id} className="queue-card" style={{ borderLeft: `3px solid ${ev.status === 'sent' ? '#22c55e' : '#ef4444'}` }}>
+                    <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#9ca3af' }}>{new Date(ev.transferred_at).toLocaleTimeString()}</span>
+                    <span><strong>{ev.source_author ?? '?'}</strong>: {ev.content.slice(0, 80)}{ev.content.length > 80 ? '…' : ''}</span>
+                    <span style={{ color: '#9ca3af' }}>{ev.source_channel_id} → {ev.target_channel_id}</span>
+                    <span className={`status-badge ${ev.status}`}>{ev.status}</span>
+                    <span style={{ color: '#9ca3af', fontSize: 11 }}>via {ev.token_label ?? '?'}</span>
+                    {ev.error && <span style={{ color: '#f87171', fontSize: 11 }}>{ev.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </section>
+
             <section className="panel">
               <h3>🔗 Conversation Sync Controls</h3>
               <div className="form-grid-2col">
