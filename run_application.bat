@@ -2,8 +2,8 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 set "ROOT=%cd%"
-set "BACKEND_URL=http://localhost:8000"
-set "DASHBOARD_URL=%BACKEND_URL%/docs"
+set "BACKEND_URL=http://127.0.0.1:8007"
+set "DASHBOARD_URL=%BACKEND_URL%"
 
 echo.
 echo ============================================================
@@ -65,6 +65,10 @@ exit /b 0
 if not exist "%ROOT%\frontend\package.json" (
     echo [DFA] Frontend not found, skipping.
     exit /b 0
+)
+REM Copy .env if not present so Vite uses the correct API base and guild.
+if not exist "%ROOT%\frontend\.env" if exist "%ROOT%\frontend\.env.example" (
+    copy "%ROOT%\frontend\.env.example" "%ROOT%\frontend\.env" >nul
 )
 start "DFA Frontend" cmd /k "cd /d "%ROOT%\frontend" && npm run dev -- --host 127.0.0.1"
 exit /b 0
