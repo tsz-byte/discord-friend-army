@@ -91,6 +91,7 @@ class FileLoaderService:
 
         changed = 0
         for index, token in enumerate(tokens):
+            # Keep assignment deterministic and balanced: token[i] gets proxy[i % len(proxies)].
             proxy = proxies[index % len(proxies)]
             if (
                 token.proxy_host == proxy.host

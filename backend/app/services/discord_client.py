@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 import random
 
@@ -6,6 +8,7 @@ import httpx
 from app.core.config import get_settings
 
 logger = logging.getLogger('discord_research.discord_client')
+RETRY_BASE_DELAY_SECONDS = 0.5
 
 
 class DiscordClient:
@@ -162,7 +165,7 @@ class DiscordClient:
                     return {
                         'status': 'failed',
                         'code': resp.status_code,
-                        'detail': self._response_error_payload(resp),
+                        'detail': json.dumps(self._response_error_payload(resp), ensure_ascii=False),
                     }
                 except httpx.HTTPError as exc:
                     if attempt < max_attempts:
@@ -228,9 +231,7 @@ class DiscordClient:
 
     @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
-        import asyncio
-
-        await asyncio.sleep(min(2.0, 0.4 * (2 ** (attempt - 1))) + random.uniform(0.0, 0.2))
+        await asyncio.sleep(min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, 0.2))
 
     @staticmethod
     def _response_error_payload(response: httpx.Response) -> dict:

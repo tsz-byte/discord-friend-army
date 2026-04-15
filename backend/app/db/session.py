@@ -56,7 +56,7 @@ def _create_resilient_engine():
 
 
 engine = _create_resilient_engine()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 

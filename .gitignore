@@ -24,3 +24,4 @@ backend/static/
 *.db
 logs/
 app.log
+errors.txt

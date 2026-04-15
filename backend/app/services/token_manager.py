@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.research import AccountToken
 
 logger = logging.getLogger('discord_research.token_manager')
+RETRY_BASE_DELAY_SECONDS = 0.5
 
 
 class TokenManagerService:
@@ -212,7 +213,7 @@ class TokenManagerService:
 
     @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
-        base = min(2.0, 0.35 * (2 ** (attempt - 1)))
+        base = min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
         await asyncio.sleep(base + random.uniform(0.0, 0.2))
 
     def pick_for_rotation(self, db: Session) -> AccountToken | None:
