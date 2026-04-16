@@ -28,12 +28,17 @@ _CONTEXT_PROPERTIES = base64.b64encode(
 ).decode()
 
 _USER_AGENT = (
+    # Keep the Chrome version in sync with current stable Chrome releases
+    # to avoid outdated fingerprints being flagged by Discord.
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
     'AppleWebKit/537.36 (KHTML, like Gecko) '
     'Chrome/124.0.0.0 Safari/537.36'
 )
 
 # X-Super-Properties mimics a standard web-client fingerprint.
+# client_build_number corresponds to a specific Discord web-client build;
+# update it periodically by reading window.GLOBAL_ENV.BUILD_NUMBER in the
+# Discord web app to keep the fingerprint current.
 _SUPER_PROPERTIES = base64.b64encode(
     json.dumps(
         {
