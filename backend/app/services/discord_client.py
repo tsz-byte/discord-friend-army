@@ -27,6 +27,12 @@ _CONTEXT_PROPERTIES = base64.b64encode(
     ).encode()
 ).decode()
 
+_USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/124.0.0.0 Safari/537.36'
+)
+
 # X-Super-Properties mimics a standard web-client fingerprint.
 _SUPER_PROPERTIES = base64.b64encode(
     json.dumps(
@@ -35,11 +41,7 @@ _SUPER_PROPERTIES = base64.b64encode(
             'browser': 'Chrome',
             'device': '',
             'system_locale': 'en-US',
-            'browser_user_agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/124.0.0.0 Safari/537.36'
-            ),
+            'browser_user_agent': _USER_AGENT,
             'browser_version': '124.0.0.0',
             'os_version': '10',
             'referrer': '',
@@ -189,11 +191,7 @@ class DiscordClient:
             'X-Context-Properties': _CONTEXT_PROPERTIES,
             'X-Super-Properties': _SUPER_PROPERTIES,
             'X-Discord-Locale': 'en-US',
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/124.0.0.0 Safari/537.36'
-            ),
+            'User-Agent': _USER_AGENT,
         }
         max_attempts = 3
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
