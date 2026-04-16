@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import random
@@ -11,6 +12,47 @@ logger = logging.getLogger('discord_research.discord_client')
 RETRY_BASE_DELAY_SECONDS = 0.5
 RETRY_MAX_SLEEP_SECONDS = 2.0
 RETRY_JITTER_SECONDS = 0.2
+
+# Pre-computed base64 headers required by Discord's user-token invite endpoint.
+# X-Context-Properties tells Discord where the join action originates.
+_CONTEXT_PROPERTIES = base64.b64encode(
+    json.dumps(
+        {
+            'location': 'Join Guild',
+            'location_guild_id': None,
+            'location_channel_id': None,
+            'location_channel_type': None,
+        },
+        separators=(',', ':'),
+    ).encode()
+).decode()
+
+# X-Super-Properties mimics a standard web-client fingerprint.
+_SUPER_PROPERTIES = base64.b64encode(
+    json.dumps(
+        {
+            'os': 'Windows',
+            'browser': 'Chrome',
+            'device': '',
+            'system_locale': 'en-US',
+            'browser_user_agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/124.0.0.0 Safari/537.36'
+            ),
+            'browser_version': '124.0.0.0',
+            'os_version': '10',
+            'referrer': '',
+            'referring_domain': '',
+            'referrer_current': '',
+            'referring_domain_current': '',
+            'release_channel': 'stable',
+            'client_build_number': 294707,
+            'client_event_source': None,
+        },
+        separators=(',', ':'),
+    ).encode()
+).decode()
 
 
 class DiscordClient:
@@ -141,7 +183,18 @@ class DiscordClient:
         if '/' in code:
             code = code.rsplit('/', 1)[-1]
 
-        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json',
+            'X-Context-Properties': _CONTEXT_PROPERTIES,
+            'X-Super-Properties': _SUPER_PROPERTIES,
+            'X-Discord-Locale': 'en-US',
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/124.0.0.0 Safari/537.36'
+            ),
+        }
         max_attempts = 3
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
             for attempt in range(1, max_attempts + 1):
