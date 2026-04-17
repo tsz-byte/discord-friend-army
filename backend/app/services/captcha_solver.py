@@ -76,6 +76,11 @@ class CreateTaskCaptchaService(BaseCaptchaService):
             'websiteKey': sitekey,
             'userAgent': user_agent,
         }
+        page_title = challenge_payload.get('captcha_page_title') or challenge_payload.get('pageTitle')
+        if page_title:
+            task_payload['pageTitle'] = str(page_title)
+        if challenge_payload.get('captcha_is_invisible') is not None:
+            task_payload['isInvisible'] = bool(challenge_payload.get('captcha_is_invisible'))
         if rqdata:
             rqdata_value = str(rqdata)
             task_payload['rqdata'] = rqdata_value
@@ -150,6 +155,12 @@ class CreateTaskCaptchaService(BaseCaptchaService):
                         'cost_usd': poll_data.get('cost'),
                         'attempts': attempt,
                     }
+                return {
+                    'status': 'failed',
+                    'detail': f'{self.service_name} returned unexpected status: {status}',
+                    'task_id': task_id,
+                    'attempts': attempt,
+                }
 
             return {'status': 'failed', 'detail': f'{self.service_name} task polling timed out', 'task_id': task_id, 'attempts': poll_attempts}
 
