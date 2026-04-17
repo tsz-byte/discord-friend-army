@@ -201,7 +201,7 @@ class CaptchaSolverService:
         anysolver_session_id = str(session_result.get('session_id') or '')
         anysolver_user_agent = session_result.get('user_agent') or user_agent
         logger.info(
-            'AnySolver session created session_id=%s user_agent=%.64s',
+            'AnySolver session created session_id=%s user_agent=%s',
             anysolver_session_id,
             str(anysolver_user_agent),
         )
