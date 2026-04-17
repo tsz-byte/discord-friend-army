@@ -28,21 +28,17 @@ pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
 proxy-server.com:8080:username:password
 ```
 
-**`api_key.conf`** — OpenRouter + captcha solver configuration:
+**`api_key.conf`** — OpenRouter + AnySolver captcha configuration:
 ```
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxx
 AI_MODEL=x-ai/grok-4.1-fast
 MAX_TOKENS=4096
 TEMPERATURE=0.7
 RESPONSE_TIMEOUT=30
-CAPTCHA_SERVICE=anysolver
-CAPTCHA_TASK_TYPE=PopularCaptchaTokenProxyLess
-CAPTCHA_SSL_VERIFY=true
-CAPTCHA_API_KEY=your-primary-captcha-key
-CAPTCHA_2CAPTCHA_API_KEY=
-ANTICAPTCHA_API_KEY=
-DEATHBYCAPTCHA_API_KEY=
 ANYSOLVER_API_KEY=your-anysolver-key
+ANYSOLVER_BASE_URL=https://api.anysolver.com
+CAPTCHA_TASK_TYPE=PopularCaptchaEnterpriseInvisibleTokenProxyLess
+CAPTCHA_SSL_VERIFY=true
 ```
 
 ### Step 2: Install dependencies
@@ -138,11 +134,21 @@ discord-friend-army/
 
 ## Captcha Configuration Notes
 
-- `CAPTCHA_SERVICE` accepts `anysolver`, `2captcha`, `anticaptcha`, `deathbycaptcha` (or comma-separated priority order).
-- `CAPTCHA_FALLBACK_SERVICES` configures automatic fallback order if the primary service fails.
-- `CAPTCHA_TASK_TYPE` is fully configurable for hCaptcha/reCaptcha task variants required by your provider.
-- `CAPTCHA_SSL_VERIFY=false` bypasses TLS verification (only for troubleshooting weak provider certificates).
-- `CAPTCHA_CA_BUNDLE_PATH` can be used to trust a custom CA bundle instead of disabling verification.
+Discord uses hCaptcha for bot protection.  The only supported solver is **AnySolver** ([anysolver.com](https://anysolver.com)).
+
+| Variable | Purpose |
+|---|---|
+| `ANYSOLVER_API_KEY` | API key from your AnySolver dashboard (required) |
+| `ANYSOLVER_BASE_URL` | Override the API base URL (default: `https://api.anysolver.com`) |
+| `CAPTCHA_TASK_TYPE` | AnySolver task type (default: `PopularCaptchaEnterpriseInvisibleTokenProxyLess`) |
+| `CAPTCHA_SSL_VERIFY` | Set to `false` only for troubleshooting weak certificates |
+| `CAPTCHA_CA_BUNDLE_PATH` | Path to a custom CA bundle file |
+
+When a Discord invite join returns a captcha challenge (HTTP 400 with `captcha_sitekey`), the system automatically:
+1. Creates an AnySolver task with `rqdata` / `data` fields and the correct `userAgent`
+2. Polls `getTaskResult` until the token is ready
+3. Retries the Discord invite join with `captcha_key` + `captcha_rqtoken` in the request body
+
 - `GET /api/v1/analytics/sentiment-trend?guild_id=...`
 - `GET /api/v1/analytics/activity-heatmap?guild_id=...`
 
