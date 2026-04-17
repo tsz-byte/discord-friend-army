@@ -195,6 +195,71 @@ class RealtimeTransferEvent(Base):
     transferred_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
 
+class ServerJoinHistory(Base):
+    __tablename__ = 'server_join_history'
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_id = Column(Integer, nullable=True, index=True)
+    guild_id = Column(String(32), nullable=True, index=True)
+    invite_code = Column(String(128), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default='pending')
+    error = Column(Text, nullable=True)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class ClanTagHistory(Base):
+    __tablename__ = 'clan_tag_history'
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_id = Column(Integer, nullable=False, index=True)
+    previous_tag = Column(String(100), nullable=True)
+    new_tag = Column(String(100), nullable=True)
+    status = Column(String(32), nullable=False, default='pending')
+    error = Column(Text, nullable=True)
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class NicknameHistory(Base):
+    __tablename__ = 'nickname_history'
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_id = Column(Integer, nullable=False, index=True)
+    guild_id = Column(String(32), nullable=False, index=True)
+    nickname = Column(String(32), nullable=True)
+    status = Column(String(32), nullable=False, default='pending')
+    error = Column(Text, nullable=True)
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class MimicProfile(Base):
+    __tablename__ = 'mimic_profile'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(32), nullable=False, index=True)
+    guild_id = Column(String(32), nullable=False, index=True)
+    analysis_depth = Column(Integer, nullable=False, default=100)
+    avg_message_length = Column(Integer, nullable=False, default=0)
+    common_words = Column(JSON, nullable=False, default=list)
+    active_hours = Column(JSON, nullable=False, default=list)
+    emoji_usage = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class ConversationTransferHistory(Base):
+    __tablename__ = 'conversation_transfer_history'
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_guild_id = Column(String(32), nullable=False, index=True)
+    source_channel_id = Column(String(32), nullable=False, index=True)
+    target_guild_id = Column(String(32), nullable=False, index=True)
+    target_channel_id = Column(String(32), nullable=False, index=True)
+    transfer_mode = Column(String(32), nullable=False, default='exact')
+    status = Column(String(32), nullable=False, default='pending')
+    messages_sent = Column(Integer, nullable=False, default=0)
+    errors = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
 class AppSetting(Base):
     """Runtime-editable key/value settings stored in the database.
 

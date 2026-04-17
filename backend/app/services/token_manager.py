@@ -213,6 +213,22 @@ class TokenManagerService:
         return token
 
     @staticmethod
+    def mark_unhealthy(
+        db: Session,
+        token: AccountToken,
+        *,
+        deactivate: bool = True,
+        status: str = 'invalid',
+    ) -> AccountToken:
+        token.health_status = status
+        if deactivate:
+            token.is_active = False
+        token.health_checked_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(token)
+        return token
+
+    @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
         base = min(2.0, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
         await asyncio.sleep(base + random.uniform(0.0, 0.2))

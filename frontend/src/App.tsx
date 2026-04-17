@@ -28,7 +28,20 @@ type AutoLoopStatus = { enabled: boolean; interval_seconds: number; task_alive: 
 type RealtimeStatus = { active: boolean; interval_ms: number; task_alive: boolean; stats: { transferred: number; failed: number; last_transfer: string | null; started_at: string | null } }
 type RealtimeEvent = { id: number; source_channel_id: string; target_channel_id: string; source_message_id: string; source_author: string | null; content: string; token_label: string | null; status: string; error: string | null; transferred_at: string }
 
-type Tab = 'overview' | 'accounts' | 'proxies' | 'servers' | 'ai' | 'sync' | 'activity' | 'settings'
+type Tab =
+  | 'overview'
+  | 'accounts'
+  | 'proxies'
+  | 'servers'
+  | 'ai'
+  | 'sync'
+  | 'activity'
+  | 'settings'
+  | 'serverJoiner'
+  | 'clanTag'
+  | 'nickname'
+  | 'mimic'
+  | 'conversationTransfer'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const DEFAULT_GUILD = import.meta.env.VITE_DEFAULT_GUILD_ID ?? 'demo-guild'
@@ -42,6 +55,11 @@ const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'sync', label: 'Sync', icon: '🔗' },
   { key: 'activity', label: 'Activity', icon: '📋' },
   { key: 'settings', label: 'Settings', icon: '⚙️' },
+  { key: 'serverJoiner', label: 'Server Joiner', icon: '🟢' },
+  { key: 'clanTag', label: 'Clantag Changer', icon: '🟡' },
+  { key: 'nickname', label: 'Nickname Changer', icon: '🟣' },
+  { key: 'mimic', label: 'Mimic', icon: '🔵' },
+  { key: 'conversationTransfer', label: 'Conversation Transfer', icon: '🔴' },
 ]
 
 function App() {
@@ -103,6 +121,31 @@ function App() {
   const [sendMsgChannel, setSendMsgChannel] = useState('')
   const [sendMsgContent, setSendMsgContent] = useState('')
   const [sendMsgLoading, setSendMsgLoading] = useState(false)
+  const [selectedTokenIds, setSelectedTokenIds] = useState<number[]>([])
+
+  // Server Joiner
+  const [joinInvite, setJoinInvite] = useState('')
+  const [joinResults, setJoinResults] = useState<Array<{ token_id: number; status: string; detail?: string }>>([])
+
+  // Clan Tag
+  const [clanTag, setClanTag] = useState('')
+  const [clanStatuses, setClanStatuses] = useState<Array<{ token_id: number; label: string; clan_tag?: string | null; status: string }>>([])
+
+  // Nickname
+  const [nicknameGuildId, setNicknameGuildId] = useState('')
+  const [nicknameTemplate, setNicknameTemplate] = useState('bot_{num}')
+  const [nicknamePreview, setNicknamePreview] = useState<Record<number, string>>({})
+
+  // Mimic
+  const [mimicUserId, setMimicUserId] = useState('')
+  const [mimicProfileId, setMimicProfileId] = useState<number | null>(null)
+  const [mimicContext, setMimicContext] = useState('')
+  const [mimicMessage, setMimicMessage] = useState('')
+
+  // Conversation transfer
+  const [convSourceChannel, setConvSourceChannel] = useState(sourceChannelId)
+  const [convTargetChannel, setConvTargetChannel] = useState(targetChannelId)
+  const [convTransferResult, setConvTransferResult] = useState<{ messages_sent: number; error_count: number } | null>(null)
 
   const trendSvgRef = useRef<SVGSVGElement | null>(null)
   const flowSvgRef = useRef<SVGSVGElement | null>(null)
@@ -502,6 +545,133 @@ function App() {
     } catch (err) { setError(err instanceof Error ? err.message : 'Join error') }
   }
 
+  const runServerJoiner = async () => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/tools/server-joiner/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          guild_id: sourceGuildId,
+          invite_code: joinInvite,
+          token_ids: selectedTokenIds,
+          auto_onboarding: true,
+          use_proxies: true,
+        }),
+      })
+      if (!res.ok) throw new Error(`Server join failed (HTTP ${res.status})`)
+      const data = await res.json() as { results: Array<{ token_id: number; status: string; detail?: string }> }
+      setJoinResults(data.results ?? [])
+      flash('Server join run completed')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Server join error') }
+  }
+
+  const runClanTagChange = async (remove = false) => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/tools/clan-tag/change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clan_tag: clanTag, token_ids: selectedTokenIds, remove }),
+      })
+      if (!res.ok) throw new Error(`Clan tag update failed (HTTP ${res.status})`)
+      await loadClanTagStatus()
+      flash('Clan tag update completed')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Clan tag update error') }
+  }
+
+  const loadClanTagStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/tools/clan-tag/status`)
+      if (res.ok) setClanStatuses((await res.json()) as Array<{ token_id: number; label: string; clan_tag?: string | null; status: string }>)
+    } catch { /* ignore */ }
+  }, [])
+
+  const generateNicknameTemplate = async () => {
+    if (!nicknameGuildId) { setError('Nickname guild id is required'); return }
+    try {
+      const res = await fetch(`${API_BASE}/tools/nickname/bulk-template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guild_id: nicknameGuildId, template: nicknameTemplate, token_ids: selectedTokenIds }),
+      })
+      if (!res.ok) throw new Error(`Template generation failed (HTTP ${res.status})`)
+      const data = await res.json() as { nicknames: Record<number, string> }
+      setNicknamePreview(data.nicknames ?? {})
+    } catch (err) { setError(err instanceof Error ? err.message : 'Nickname template error') }
+  }
+
+  const applyNicknameTemplate = async () => {
+    if (!nicknameGuildId) { setError('Nickname guild id is required'); return }
+    try {
+      const payload = {
+        guild_id: nicknameGuildId,
+        nicknames: Object.fromEntries(Object.entries(nicknamePreview).map(([k, v]) => [Number(k), v])),
+        use_template: true,
+      }
+      const res = await fetch(`${API_BASE}/tools/nickname/change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error(`Nickname apply failed (HTTP ${res.status})`)
+      flash('Nickname update completed')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Nickname update error') }
+  }
+
+  const captureMimicProfile = async () => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/tools/mimic/capture-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: mimicUserId, guild_id: sourceGuildId, analysis_depth: 100 }),
+      })
+      if (!res.ok) throw new Error(`Mimic capture failed (HTTP ${res.status})`)
+      const data = await res.json() as { profile_id: number }
+      setMimicProfileId(data.profile_id)
+      flash(`Mimic profile #${data.profile_id} captured`)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Mimic capture error') }
+  }
+
+  const generateMimicMessage = async () => {
+    if (!mimicProfileId) { setError('Capture a profile first'); return }
+    try {
+      const res = await fetch(`${API_BASE}/tools/mimic/generate-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: mimicProfileId, context: mimicContext, style: 'similar' }),
+      })
+      if (!res.ok) throw new Error(`Mimic generate failed (HTTP ${res.status})`)
+      const data = await res.json() as { message: string }
+      setMimicMessage(data.message)
+    } catch (err) { setError(err instanceof Error ? err.message : 'Mimic generate error') }
+  }
+
+  const runConversationTransfer = async () => {
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/tools/conversation/transfer-with-context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_guild_id: sourceGuildId,
+          source_channel_id: convSourceChannel,
+          target_guild_id: targetGuildId,
+          target_channel_id: convTargetChannel,
+          transfer_mode: 'exact',
+          preserve_author: true,
+          add_context: true,
+          randomize_delays: true,
+        }),
+      })
+      if (!res.ok) throw new Error(`Transfer failed (HTTP ${res.status})`)
+      const data = await res.json() as { messages_sent: number; error_count: number }
+      setConvTransferResult(data)
+      flash('Conversation transfer completed')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Conversation transfer error') }
+  }
+
   const topTopics = useMemo(() => overview?.top_topics ?? [], [overview])
   const filteredLogs = useMemo(() => {
     if (!logFilter) return activityLogs
@@ -514,6 +684,11 @@ function App() {
     const colors: Record<string, string> = { healthy: '#22c55e', unknown: '#facc15', invalid: '#ef4444', unreachable: '#ef4444' }
     return <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: colors[status] ?? '#9ca3af', marginRight: 6 }} />
   }
+  const toggleSelectedToken = (tokenId: number) => {
+    setSelectedTokenIds(prev => prev.includes(tokenId) ? prev.filter(id => id !== tokenId) : [...prev, tokenId])
+  }
+  const selectAllTokens = () => setSelectedTokenIds(tokens.map(t => t.id))
+  const clearSelectedTokens = () => setSelectedTokenIds([])
 
   /* ---------- render ---------- */
   return (
@@ -1098,6 +1273,179 @@ function App() {
                 <button className="btn-secondary" onClick={() => void loadProxiesFromFile()}>📄 Reload p.txt (Proxies)</button>
                 <button className="btn-secondary" onClick={() => void loadApiConfig()}>📄 Reload api_key.conf</button>
               </div>
+            </section>
+          </div>
+        )}
+
+        {/* ===== SERVER JOINER TAB ===== */}
+        {activeTab === 'serverJoiner' && (
+          <div className="tab-content">
+            <section className="panel">
+              <h3>🟢 Server Joiner</h3>
+              <p className="panel-desc">Join servers with selected tokens and store join history.</p>
+              <div className="form-grid-2col">
+                <div className="form-group full-width">
+                  <label>Invite Link / Code</label>
+                  <input value={joinInvite} onChange={e => setJoinInvite(e.target.value)} placeholder="https://discord.gg/xxxx" />
+                </div>
+              </div>
+              <div className="btn-row">
+                <button className="btn-secondary" onClick={selectAllTokens}>Select all tokens</button>
+                <button className="btn-outline" onClick={clearSelectedTokens}>Clear</button>
+              </div>
+              <div className="token-list" style={{ marginTop: 8 }}>
+                {tokens.map(t => (
+                  <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" checked={selectedTokenIds.includes(t.id)} onChange={() => toggleSelectedToken(t.id)} />
+                    <span>{t.label}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="btn-row" style={{ marginTop: 12 }}>
+                <button className="btn-primary" onClick={() => void runServerJoiner()}>Execute Join</button>
+              </div>
+            </section>
+            <section className="panel">
+              <h3>Results</h3>
+              <div className="queue-list">
+                {joinResults.map((item, i) => (
+                  <div key={`${item.token_id}-${i}`} className="queue-card">
+                    <strong>Token #{item.token_id}</strong>
+                    <span className={`status-badge ${item.status}`}>{item.status}</span>
+                    {item.detail && <span style={{ color: '#9ca3af' }}>{item.detail}</span>}
+                  </div>
+                ))}
+                {!joinResults.length && <p className="empty-text">No runs yet.</p>}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ===== CLAN TAG TAB ===== */}
+        {activeTab === 'clanTag' && (
+          <div className="tab-content">
+            <section className="panel">
+              <h3>🟡 Clantag Changer</h3>
+              <div className="form-grid-2col">
+                <div className="form-group full-width">
+                  <label>Clan Tag (max 100 chars)</label>
+                  <input maxLength={100} value={clanTag} onChange={e => setClanTag(e.target.value)} placeholder="[1] Gaming" />
+                </div>
+              </div>
+              <div className="btn-row">
+                <button className="btn-primary" onClick={() => void runClanTagChange(false)}>Apply Tag</button>
+                <button className="btn-secondary" onClick={() => void runClanTagChange(true)}>Clear Tags</button>
+                <button className="btn-outline" onClick={() => void loadClanTagStatus()}>Refresh Status</button>
+              </div>
+            </section>
+            <section className="panel">
+              <h3>Status</h3>
+              <div className="queue-list">
+                {clanStatuses.map(row => (
+                  <div key={row.token_id} className="queue-card">
+                    <strong>{row.label}</strong>
+                    <span>{row.clan_tag ?? '(none)'}</span>
+                    <span className={`status-badge ${row.status}`}>{row.status}</span>
+                  </div>
+                ))}
+                {!clanStatuses.length && <p className="empty-text">No clan tag history yet.</p>}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ===== NICKNAME TAB ===== */}
+        {activeTab === 'nickname' && (
+          <div className="tab-content">
+            <section className="panel">
+              <h3>🟣 Nickname Changer</h3>
+              <div className="form-grid-2col">
+                <div className="form-group">
+                  <label>Guild ID</label>
+                  <input value={nicknameGuildId} onChange={e => setNicknameGuildId(e.target.value)} placeholder="Server ID" />
+                </div>
+                <div className="form-group">
+                  <label>Template</label>
+                  <input value={nicknameTemplate} onChange={e => setNicknameTemplate(e.target.value)} placeholder="bot_{num}" />
+                </div>
+              </div>
+              <div className="btn-row">
+                <button className="btn-secondary" onClick={() => void generateNicknameTemplate()}>Preview Template</button>
+                <button className="btn-primary" onClick={() => void applyNicknameTemplate()}>Apply Nicknames</button>
+              </div>
+            </section>
+            <section className="panel">
+              <h3>Preview</h3>
+              <div className="queue-list">
+                {Object.entries(nicknamePreview).map(([tokenId, nickname]) => (
+                  <div key={tokenId} className="queue-card">
+                    <strong>Token #{tokenId}</strong>
+                    <span>{nickname}</span>
+                  </div>
+                ))}
+                {!Object.keys(nicknamePreview).length && <p className="empty-text">Generate preview to see nicknames.</p>}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ===== MIMIC TAB ===== */}
+        {activeTab === 'mimic' && (
+          <div className="tab-content">
+            <section className="panel">
+              <h3>🔵 Mimic</h3>
+              <div className="form-grid-2col">
+                <div className="form-group">
+                  <label>User ID</label>
+                  <input value={mimicUserId} onChange={e => setMimicUserId(e.target.value)} placeholder="Discord user ID" />
+                </div>
+                <div className="form-group">
+                  <label>Captured Profile ID</label>
+                  <input value={mimicProfileId ?? ''} onChange={e => setMimicProfileId(Number(e.target.value) || null)} />
+                </div>
+                <div className="form-group full-width">
+                  <label>Context</label>
+                  <input value={mimicContext} onChange={e => setMimicContext(e.target.value)} placeholder="What should be said?" />
+                </div>
+              </div>
+              <div className="btn-row">
+                <button className="btn-secondary" onClick={() => void captureMimicProfile()}>Capture Profile</button>
+                <button className="btn-primary" onClick={() => void generateMimicMessage()}>Generate Message</button>
+              </div>
+              {mimicMessage && (
+                <div className="ai-response-box">
+                  <h4>Generated Message</h4>
+                  <p>{mimicMessage}</p>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {/* ===== CONVERSATION TRANSFER TAB ===== */}
+        {activeTab === 'conversationTransfer' && (
+          <div className="tab-content">
+            <section className="panel">
+              <h3>🔴 Conversation Transfer</h3>
+              <div className="form-grid-2col">
+                <div className="form-group">
+                  <label>Source Channel ID</label>
+                  <input value={convSourceChannel} onChange={e => setConvSourceChannel(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Target Channel ID</label>
+                  <input value={convTargetChannel} onChange={e => setConvTargetChannel(e.target.value)} />
+                </div>
+              </div>
+              <div className="btn-row">
+                <button className="btn-primary" onClick={() => void runConversationTransfer()}>Start Transfer</button>
+              </div>
+              {convTransferResult && (
+                <div className="stat-cards mini" style={{ marginTop: 12 }}>
+                  <div className="stat-card-mini"><strong>{convTransferResult.messages_sent}</strong><span>Messages Sent</span></div>
+                  <div className="stat-card-mini"><strong>{convTransferResult.error_count}</strong><span>Errors</span></div>
+                </div>
+              )}
             </section>
           </div>
         )}

@@ -7,8 +7,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import get_settings
+from app.core.exceptions import AppError
 from app.core.logging import configure_logging
 from app.db.session import Base, engine
+from app.middleware.errors import app_error_handler, generic_error_handler
+from app.middleware.request_context import request_logging_middleware
 
 settings = get_settings()
 configure_logging()
@@ -21,6 +24,9 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+app.middleware('http')(request_logging_middleware)
+app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(Exception, generic_error_handler)
 
 
 @app.on_event('startup')
@@ -33,11 +39,16 @@ async def startup_event() -> None:
         from app.db.session import SessionLocal
         from app.models.research import AccountToken, ChannelMapping, AppSetting
         from app.services import auto_replication
+        from app.services.token_manager import TokenManagerService
 
         db = SessionLocal()
         try:
             active_tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).count()
             enabled_mappings = db.query(ChannelMapping).filter(ChannelMapping.enabled.is_(True)).count()
+            manager = TokenManagerService()
+            token_rows = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).all()
+            for token_row in token_rows:
+                await manager.health_check(db, token_row)
 
             # Read stored interval setting if present.
             interval_row = db.query(AppSetting).filter(AppSetting.key == 'auto_loop_interval_seconds').first()

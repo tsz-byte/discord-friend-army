@@ -3,6 +3,7 @@ import logging
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
@@ -31,6 +32,7 @@ def _engine_kwargs(dsn: str) -> dict:
                 'check_same_thread': False,
                 'timeout': SQLITE_BUSY_TIMEOUT_SECONDS,
             },
+            'poolclass': NullPool,
             'pool_pre_ping': True,
             'pool_recycle': POOL_RECYCLE_SECONDS,
         }
