@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,8 @@ from app.schemas.research import (
     PatternCaptureRequest,
     ProxyHealthResponse,
     ProxyRecord,
+    RuntypeSettingResponse,
+    RuntypeSettingUpdateRequest,
     RealtimeEventRecord,
     RealtimeStartRequest,
     RealtimeStatusResponse,
@@ -77,6 +80,32 @@ token_manager = TokenManagerService()
 ai_service = AIChatService()
 pattern_analyzer = MessagePatternAnalyzer()
 replication_engine = ConversationReplicationEngine()
+
+
+def _refresh_runtime_settings() -> None:
+    global settings, discord_client, rate_limiter, nlp, ai_service
+    get_settings.cache_clear()
+    settings = get_settings()
+    discord_client = DiscordClient()
+    rate_limiter = DiscordRateLimiter(limit_per_minute=settings.discord_requests_per_minute)
+    nlp = OpenRouterNLPService()
+    ai_service = AIChatService()
+
+
+def _read_runtype(db: Session) -> str:
+    row = db.query(AppSetting).filter(AppSetting.key == 'runtype').first()
+    if row and row.value:
+        value = row.value.strip().upper()
+        if value in {'USERT', 'BOTT'}:
+            return value
+    return settings.runtype
+
+
+def _read_bot_token(db: Session) -> str:
+    row = db.query(AppSetting).filter(AppSetting.key == 'discord_bot_token').first()
+    if row and row.value:
+        return row.value
+    return settings.discord_bot_token or ''
 
 
 def serialize_token_record(row: AccountToken) -> AccountTokenResponse:
@@ -869,12 +898,18 @@ def load_api_config():
         'CAPTCHA_TASK_TYPE': 'DFA_CAPTCHA_TASK_TYPE',
         'CAPTCHA_SSL_VERIFY': 'DFA_CAPTCHA_SSL_VERIFY',
         'CAPTCHA_CA_BUNDLE_PATH': 'DFA_CAPTCHA_CA_BUNDLE_PATH',
+        'RUNTYPE': 'DFA_RUNTYPE',
+        'DISCORD_BOT_TOKEN': 'DFA_DISCORD_BOT_TOKEN',
     }
     applied: list[str] = []
     for file_key, env_key in env_map.items():
         if file_key in config:
             os.environ[env_key] = config[file_key]
             applied.append(file_key)
+    try:
+        _refresh_runtime_settings()
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     log_event('api_config_loaded', {'keys_found': list(config.keys()), 'applied': applied})
     return {'status': 'loaded', 'keys': list(config.keys()), 'applied': applied}
@@ -981,6 +1016,47 @@ def bulk_update_settings(request: SettingsBulkUpdateRequest, db: Session = Depen
 
     log_event('settings_bulk_updated', {'keys': list(request.settings.keys())})
     return {'status': 'saved', 'updated_keys': list(request.settings.keys())}
+
+
+@router.get('/settings/runtype', response_model=RuntypeSettingResponse)
+def get_runtype_setting(db: Session = Depends(get_db)):
+    runtype = _read_runtype(db)
+    bot_token = _read_bot_token(db)
+    return RuntypeSettingResponse(runtype=runtype, bot_token_configured=bool(bot_token.strip()))
+
+
+@router.patch('/settings/runtype', response_model=RuntypeSettingResponse)
+def update_runtype_setting(request: RuntypeSettingUpdateRequest, db: Session = Depends(get_db)):
+    runtype = request.runtype.strip().upper()
+    bot_token = (request.discord_bot_token if request.discord_bot_token is not None else _read_bot_token(db)).strip()
+    if runtype == 'BOTT' and not bot_token:
+        raise HTTPException(status_code=400, detail='discord_bot_token is required when runtype=BOTT')
+
+    runtype_row = db.query(AppSetting).filter(AppSetting.key == 'runtype').first()
+    if runtype_row is None:
+        runtype_row = AppSetting(key='runtype', value=runtype)
+        db.add(runtype_row)
+    else:
+        runtype_row.value = runtype
+
+    if request.discord_bot_token is not None:
+        token_row = db.query(AppSetting).filter(AppSetting.key == 'discord_bot_token').first()
+        if token_row is None:
+            token_row = AppSetting(key='discord_bot_token', value=request.discord_bot_token)
+            db.add(token_row)
+        else:
+            token_row.value = request.discord_bot_token
+
+    db.commit()
+    os.environ['DFA_RUNTYPE'] = runtype
+    if request.discord_bot_token is not None:
+        os.environ['DFA_DISCORD_BOT_TOKEN'] = request.discord_bot_token
+    try:
+        _refresh_runtime_settings()
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_event('runtype_updated', {'runtype': runtype})
+    return RuntypeSettingResponse(runtype=runtype, bot_token_configured=bool((request.discord_bot_token or bot_token).strip()))
 
 
 @router.get('/settings/all', response_model=list[AppSettingResponse])
@@ -1165,12 +1241,16 @@ async def realtime_start(
 ):
     """Start the real-time channel listener."""
     from app.services import realtime_listener
-    tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).all()
-    for token_row in tokens:
-        await token_manager.health_check(db, token_row)
+    runtype = _read_runtype(db)
+    if runtype == 'USERT':
+        tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).all()
+        for token_row in tokens:
+            await token_manager.health_check(db, token_row)
+    elif not _read_bot_token(db).strip():
+        raise HTTPException(status_code=400, detail='discord_bot_token is required when runtype=BOTT')
 
     result = realtime_listener.start_listener(interval_ms=request.interval_ms)
-    log_event('realtime_listener_started', {'interval_ms': request.interval_ms})
+    log_event('realtime_listener_started', {'interval_ms': request.interval_ms, 'runtype': runtype})
     return RealtimeStatusResponse(**result)
 
 

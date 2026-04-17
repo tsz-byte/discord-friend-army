@@ -25,6 +25,7 @@ type ProxyRecord = { id: number; host: string; port: number; username: string; i
 type ProxyHealth = { total: number; healthy: number; unhealthy: number; proxies: ProxyRecord[] }
 type AppSetting = { key: string; value: string | null }
 type AutoLoopStatus = { enabled: boolean; interval_seconds: number; task_alive: boolean }
+type RuntypeSetting = { runtype: 'USERT' | 'BOTT'; bot_token_configured: boolean }
 type RealtimeStatus = { active: boolean; interval_ms: number; task_alive: boolean; stats: { transferred: number; failed: number; last_transfer: string | null; started_at: string | null } }
 type RealtimeEvent = { id: number; source_channel_id: string; target_channel_id: string; source_message_id: string; source_author: string | null; content: string; token_label: string | null; status: string; error: string | null; transferred_at: string }
 
@@ -110,6 +111,7 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({})
   const [autoLoopStatus, setAutoLoopStatus] = useState<AutoLoopStatus | null>(null)
   const [autoLoopInterval, setAutoLoopInterval] = useState(180)
+  const [runtypeSetting, setRuntypeSetting] = useState<RuntypeSetting>({ runtype: 'USERT', bot_token_configured: false })
 
   // Real-time transfer state
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus | null>(null)
@@ -197,9 +199,10 @@ function App() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [settingsRes, loopRes] = await Promise.all([
+      const [settingsRes, loopRes, runtypeRes] = await Promise.all([
         fetch(`${API_BASE}/settings/all`),
         fetch(`${API_BASE}/replication/auto-loop/status`),
+        fetch(`${API_BASE}/settings/runtype`),
       ])
       if (settingsRes.ok) {
         const rows = (await settingsRes.json()) as AppSetting[]
@@ -210,6 +213,14 @@ function App() {
         setSettingsDraft(prev => ({ ...draft, ...prev }))
       }
       if (loopRes.ok) setAutoLoopStatus((await loopRes.json()) as AutoLoopStatus)
+      if (runtypeRes.ok) {
+        const mode = (await runtypeRes.json()) as RuntypeSetting
+        setRuntypeSetting(mode)
+        setSettingsDraft(prev => ({
+          ...prev,
+          runtype: mode.runtype,
+        }))
+      }
     } catch { /* non-fatal */ }
   }, [])
 
@@ -413,6 +424,24 @@ function App() {
       await loadSettings()
       flash('Settings saved successfully')
     } catch (err) { setError(err instanceof Error ? err.message : 'Save error') }
+  }
+
+  const saveRuntypeSettings = async () => {
+    setError('')
+    try {
+      const runtype = (settingsDraft.runtype || 'USERT').toUpperCase()
+      const payload: { runtype: string; discord_bot_token?: string } = { runtype }
+      if ((settingsDraft.discord_bot_token ?? '').trim()) payload.discord_bot_token = settingsDraft.discord_bot_token
+      const res = await fetch(`${API_BASE}/settings/runtype`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error(`Failed to update runtime mode (HTTP ${res.status})`)
+      setRuntypeSetting((await res.json()) as RuntypeSetting)
+      flash('Runtime mode updated')
+      await loadSettings()
+    } catch (err) { setError(err instanceof Error ? err.message : 'Runtime mode update error') }
   }
 
   const toggleAutoLoop = async () => {
@@ -719,6 +748,7 @@ function App() {
           <h2>{TABS.find(t => t.key === activeTab)?.icon} {TABS.find(t => t.key === activeTab)?.label}</h2>
           <div className="top-bar-right">
             <span className="status-pill">{dashStats ? `${dashStats.active_accounts} accounts online` : '...'}</span>
+            <span className="status-pill">Mode: {runtypeSetting.runtype}</span>
             {dashStats ? <span className="uptime-badge">⏱ {formatUptime(dashStats.uptime_seconds)}</span> : null}
           </div>
         </header>
@@ -1181,6 +1211,37 @@ function App() {
         {/* ===== SETTINGS TAB ===== */}
         {activeTab === 'settings' && (
           <div className="tab-content">
+            <section className="panel">
+              <h3>🧭 Runtime Mode</h3>
+              <p style={{ color: '#9ca3af', marginBottom: 12, fontSize: 13 }}>
+                USERT uses account tokens, BOTT uses one bot token + webhooks.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px', marginBottom: 12 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                  <span style={{ fontWeight: 600 }}>RUNTYPE</span>
+                  <select
+                    value={settingsDraft.runtype ?? runtypeSetting.runtype}
+                    onChange={e => setSettingsDraft(prev => ({ ...prev, runtype: e.target.value }))}
+                  >
+                    <option value="USERT">USERT</option>
+                    <option value="BOTT">BOTT</option>
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                  <span style={{ fontWeight: 600 }}>Discord Bot Token</span>
+                  <input
+                    type="password"
+                    placeholder={runtypeSetting.bot_token_configured ? 'Configured (leave empty to keep current)' : 'Paste bot token'}
+                    value={settingsDraft.discord_bot_token ?? ''}
+                    onChange={e => setSettingsDraft(prev => ({ ...prev, discord_bot_token: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <div className="btn-row">
+                <button className="btn-primary" onClick={() => void saveRuntypeSettings()}>💾 Save Runtime Mode</button>
+              </div>
+            </section>
+
             {/* Auto-loop control */}
             <section className="panel">
               <h3>🤖 Auto-Replication Loop</h3>

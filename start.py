@@ -122,6 +122,8 @@ def load_api_config() -> None:
                         'CAPTCHA_TASK_TYPE': 'DFA_CAPTCHA_TASK_TYPE',
                         'CAPTCHA_SSL_VERIFY': 'DFA_CAPTCHA_SSL_VERIFY',
                         'CAPTCHA_CA_BUNDLE_PATH': 'DFA_CAPTCHA_CA_BUNDLE_PATH',
+                        'RUNTYPE': 'DFA_RUNTYPE',
+                        'DISCORD_BOT_TOKEN': 'DFA_DISCORD_BOT_TOKEN',
                     }
                     env_key = env_map.get(key)
                     if env_key and value:
@@ -131,6 +133,21 @@ def load_api_config() -> None:
     except Exception as exc:
         logger.error(f'Failed to load api_key.conf: {exc}')
         logger.debug(traceback.format_exc())
+
+
+def _runtime_mode() -> str:
+    value = os.environ.get('DFA_RUNTYPE', 'USERT').strip().upper() or 'USERT'
+    if value not in {'USERT', 'BOTT'}:
+        raise ValueError('RUNTYPE in api_key.conf must be USERT or BOTT')
+    return value
+
+
+def validate_runtime_mode() -> str:
+    mode = _runtime_mode()
+    if mode == 'BOTT' and not os.environ.get('DFA_DISCORD_BOT_TOKEN', '').strip():
+        raise ValueError('DISCORD_BOT_TOKEN must be set in api_key.conf when RUNTYPE=BOTT')
+    logger.info('Active runtime mode: %s', mode)
+    return mode
 
 
 def load_credentials() -> tuple[int, int]:
@@ -393,6 +410,7 @@ def main() -> None:
 
     logger.info('Step 1: Loading API configuration...')
     load_api_config()
+    mode = validate_runtime_mode()
 
     logger.info('Step 2: Loading credentials (tokens + proxies)...')
     tokens_loaded, proxies_loaded = load_credentials()
@@ -411,13 +429,14 @@ def main() -> None:
     print('-' * 60)
     print(f'  Tokens loaded:   {tokens_loaded}')
     print(f'  Proxies loaded:  {proxies_loaded}')
+    print(f'  Runtime mode:    {mode}')
     print(f'  Frontend built:  {"yes" if frontend_built else "no (npm missing or build failed)"}')
     print(f'  Dashboard:       http://{HOST}:{PORT}')
     print(f'  API docs:        http://{HOST}:{PORT}/docs')
     print('-' * 60)
     print()
 
-    if tokens_loaded == 0:
+    if mode == 'USERT' and tokens_loaded == 0:
         logger.warning('No tokens loaded. Add tokens to t.txt (one per line) and restart.')
     if proxies_loaded == 0:
         logger.warning(

@@ -47,3 +47,28 @@ def test_ai_chat():
     data = response.json()
     assert 'response' in data
     assert 'model' in data
+
+
+def test_get_runtype_setting():
+    response = client.get('/api/v1/settings/runtype')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['runtype'] in {'USERT', 'BOTT'}
+    assert isinstance(data['bot_token_configured'], bool)
+
+
+def test_patch_runtype_requires_bot_token_for_bott():
+    client.patch('/api/v1/settings/runtype', json={'runtype': 'USERT', 'discord_bot_token': ''})
+    response = client.patch('/api/v1/settings/runtype', json={'runtype': 'BOTT', 'discord_bot_token': ''})
+    assert response.status_code == 400
+
+
+def test_patch_runtype_accepts_bott_with_token():
+    response = client.patch('/api/v1/settings/runtype', json={'runtype': 'BOTT', 'discord_bot_token': 'bot-token-abc'})
+    assert response.status_code == 200
+    data = response.json()
+    assert data['runtype'] == 'BOTT'
+    assert data['bot_token_configured'] is True
+    # restore default mode for other tests
+    restore = client.patch('/api/v1/settings/runtype', json={'runtype': 'USERT'})
+    assert restore.status_code == 200

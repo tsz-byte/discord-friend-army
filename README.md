@@ -28,8 +28,10 @@ pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
 proxy-server.com:8080:username:password
 ```
 
-**`api_key.conf`** — OpenRouter + AnySolver captcha configuration:
+**`api_key.conf`** — Runtime mode + OpenRouter + AnySolver captcha configuration:
 ```
+RUNTYPE=USERT
+DISCORD_BOT_TOKEN=
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxx
 AI_MODEL=x-ai/grok-4.1-fast
 MAX_TOKENS=4096
@@ -110,6 +112,8 @@ discord-friend-army/
 - `POST /api/v1/accounts/load-file` — Load tokens from `t.txt`
 - `POST /api/v1/proxies/load-file` — Load proxies from `p.txt`
 - `POST /api/v1/config/load-file` — Load settings from `api_key.conf`
+- `GET /api/v1/settings/runtype` — Read active runtime mode (`USERT`/`BOTT`)
+- `PATCH /api/v1/settings/runtype` — Switch runtime mode and set bot token
 
 ### Account & Proxy Operations
 - `POST /api/v1/replication/tokens` — Add individual token

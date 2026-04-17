@@ -43,6 +43,35 @@ _loop_task: asyncio.Task | None = None
 _loop_interval_seconds: int = 180  # default: 3 minutes
 
 
+def _read_setting_value(db: Session, key: str) -> str | None:
+    try:
+        from app.models.research import AppSetting
+        row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if row and row.value is not None:
+            return row.value
+    except Exception:
+        pass
+    return None
+
+
+def _read_runtype(db: Session) -> str:
+    value = (_read_setting_value(db, 'runtype') or '').strip().upper()
+    if value in {'USERT', 'BOTT'}:
+        return value
+    from app.core.config import get_settings
+
+    return get_settings().runtype
+
+
+def _read_bot_token(db: Session) -> str:
+    value = (_read_setting_value(db, 'discord_bot_token') or '').strip()
+    if value:
+        return value
+    from app.core.config import get_settings
+
+    return (get_settings().discord_bot_token or '').strip()
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -65,19 +94,23 @@ async def _dispatch_queued_items(db: Session) -> int:
     )
 
     dispatched = 0
+    runtype = _read_runtype(db)
+    bot_token = _read_bot_token(db)
     for item in items:
-        token = token_manager.pick_for_rotation(db)
-        if token is None:
-            item.status = 'failed'
-            item.error = 'No active tokens available for dispatch'
-            item.attempts += 1
-            item.processed_at = datetime.now(timezone.utc)
-            db.commit()
-            logger.error('dispatch_queued_items: no active tokens, item %d failed', item.id)
-            break
+        token = None
+        if runtype == 'USERT':
+            token = token_manager.pick_for_rotation(db)
+            if token is None:
+                item.status = 'failed'
+                item.error = 'No active tokens available for dispatch'
+                item.attempts += 1
+                item.processed_at = datetime.now(timezone.utc)
+                db.commit()
+                logger.error('dispatch_queued_items: no active tokens, item %d failed', item.id)
+                break
 
         proxy_url: str | None = None
-        if token.proxy_host and token.proxy_port:
+        if token and token.proxy_host and token.proxy_port:
             proxy_url = token_manager.build_proxy_url(
                 host=token.proxy_host,
                 port=token.proxy_port,
@@ -89,12 +122,22 @@ async def _dispatch_queued_items(db: Session) -> int:
         target_channel_id: str = item.target_channel_id
 
         try:
-            result = await discord_client.send_message(
-                channel_id=target_channel_id,
-                content=content,
-                token=token.token_value,
-                proxy_url=proxy_url,
-            )
+            if runtype == 'BOTT':
+                identity = item.payload.get('webhook_identity', {}) if isinstance(item.payload, dict) else {}
+                result = await discord_client.send_webhook_message(
+                    channel_id=target_channel_id,
+                    content=content,
+                    username=identity.get('username', 'DFA Mirror'),
+                    avatar_url=identity.get('avatar_url'),
+                    bot_token=bot_token,
+                )
+            else:
+                result = await discord_client.send_message(
+                    channel_id=target_channel_id,
+                    content=content,
+                    token=token.token_value,
+                    proxy_url=proxy_url,
+                )
         except Exception as exc:
             result = {'status': 'error', 'detail': str(exc)}
             logger.error('dispatch_queued_items: unexpected error sending item %d: %s', item.id, exc)
@@ -107,7 +150,9 @@ async def _dispatch_queued_items(db: Session) -> int:
             item.error = None
             dispatched += 1
         elif (
-            result.get('status') == 'failed'
+            runtype == 'USERT'
+            and token is not None
+            and result.get('status') == 'failed'
             and result.get('code') == 403
             and '50001' in str(result.get('detail', ''))
         ):
@@ -134,7 +179,7 @@ async def _dispatch_queued_items(db: Session) -> int:
         else:
             item.status = 'failed'
             item.error = f"{result.get('status')}: {result.get('detail', '')}"
-            if result.get('code') == 401:
+            if token is not None and result.get('code') == 401:
                 token.health_status = 'invalid'
             logger.error(
                 'dispatch_queued_items: item %d failed — %s',
@@ -174,6 +219,7 @@ async def _run_loop_cycle() -> None:
             logger.info('auto_loop: re-queued %d failed items', len(failed_items))
 
         # ---- 2. Check readiness: need tokens + channel mappings ----
+        runtype = _read_runtype(db)
         active_tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).count()
         mappings = (
             db.query(ChannelMapping)
@@ -181,7 +227,7 @@ async def _run_loop_cycle() -> None:
             .all()
         )
 
-        if active_tokens == 0:
+        if runtype == 'USERT' and active_tokens == 0:
             logger.warning('auto_loop: skipping cycle — no active tokens')
             return
 
@@ -192,9 +238,9 @@ async def _run_loop_cycle() -> None:
         # ---- 3. Fetch target-guild members for tagging (best-effort) ----
         token_manager = TokenManagerService()
         discord_client = DiscordClient()
-        first_token = token_manager.pick_for_rotation(db)
+        first_token = token_manager.pick_for_rotation(db) if runtype == 'USERT' else None
         target_members: list[str] = []
-        if first_token:
+        if runtype == 'USERT' and first_token:
             target_guild_ids = list({m.target_guild_id for m in mappings})
             proxy_url: str | None = None
             if first_token.proxy_host and first_token.proxy_port:

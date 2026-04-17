@@ -68,7 +68,8 @@ class DiscordClient:
     def __init__(self) -> None:
         settings = get_settings()
         self.base_url = settings.discord_api_base_url.rstrip('/')
-        self.token = settings.discord_bot_token
+        self.token = (settings.discord_bot_token or '').strip()
+        self.runtype = settings.runtype
         self.captcha_solver = CaptchaSolverService()
 
     async def get_guild(self, guild_id: str) -> dict:
@@ -337,6 +338,82 @@ class DiscordClient:
                         continue
                     return {'status': 'error', 'detail': str(exc)}
 
+    async def get_or_create_channel_webhook(
+        self,
+        channel_id: str,
+        bot_token: str | None = None,
+        webhook_name: str = 'DFA Mirror',
+    ) -> dict:
+        """Return a reusable webhook for a target channel."""
+        token = (bot_token or self.token or '').strip()
+        if not token:
+            return {'status': 'failed', 'detail': 'bot token missing'}
+        headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+        async with httpx.AsyncClient(timeout=20) as client:
+            try:
+                list_resp = await client.get(f'{self.base_url}/channels/{channel_id}/webhooks', headers=headers)
+                if list_resp.status_code == 200:
+                    hooks = list_resp.json() if isinstance(list_resp.json(), list) else []
+                    for hook in hooks:
+                        hook_token = hook.get('token')
+                        if hook.get('type') == 1 and hook_token and hook.get('name') == webhook_name:
+                            return {
+                                'status': 'ok',
+                                'webhook_id': str(hook.get('id')),
+                                'webhook_token': hook_token,
+                                'url': f"{self.base_url}/webhooks/{hook.get('id')}/{hook_token}",
+                            }
+                create_resp = await client.post(
+                    f'{self.base_url}/channels/{channel_id}/webhooks',
+                    headers=headers,
+                    json={'name': webhook_name},
+                )
+                if create_resp.status_code in (200, 201):
+                    hook = create_resp.json()
+                    hook_token = hook.get('token')
+                    if hook_token:
+                        return {
+                            'status': 'ok',
+                            'webhook_id': str(hook.get('id')),
+                            'webhook_token': hook_token,
+                            'url': f"{self.base_url}/webhooks/{hook.get('id')}/{hook_token}",
+                        }
+                return {'status': 'failed', 'code': create_resp.status_code, 'detail': create_resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def send_webhook_message(
+        self,
+        channel_id: str,
+        content: str,
+        username: str,
+        avatar_url: str | None = None,
+        timestamp_iso: str | None = None,
+        bot_token: str | None = None,
+    ) -> dict:
+        """Send a message through a channel webhook while spoofing author identity."""
+        webhook = await self.get_or_create_channel_webhook(channel_id=channel_id, bot_token=bot_token)
+        if webhook.get('status') != 'ok':
+            return webhook
+        body_content = content
+        if timestamp_iso:
+            body_content = f'[{timestamp_iso}] {content}'
+        payload = {
+            'content': body_content[:2000],
+            'username': (username or 'Unknown')[:80],
+            'allowed_mentions': {'parse': []},
+        }
+        if avatar_url:
+            payload['avatar_url'] = avatar_url
+        async with httpx.AsyncClient(timeout=20) as client:
+            try:
+                resp = await client.post(f"{webhook['url']}?wait=true", json=payload)
+                if resp.status_code in (200, 201, 204):
+                    return {'status': 'sent', 'message': resp.json() if resp.content else {}}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
     async def get_guild_members(
         self,
         guild_id: str,
@@ -374,7 +451,7 @@ class DiscordClient:
     async def get_channel_messages(
         self,
         channel_id: str,
-        token: str,
+        token: str | None = None,
         after: str | None = None,
         limit: int = 50,
         proxy_url: str | None = None,
@@ -384,7 +461,13 @@ class DiscordClient:
         Returns messages in ascending order (oldest first).  Returns an empty
         list on any error so callers can degrade gracefully.
         """
-        headers = {'Authorization': token}
+        auth_token = (token or '').strip()
+        if auth_token:
+            headers = {'Authorization': auth_token}
+        elif self.token:
+            headers = {'Authorization': f'Bot {self.token}'}
+        else:
+            return []
         params: dict = {'limit': min(limit, 100)}
         if after:
             params['after'] = after
