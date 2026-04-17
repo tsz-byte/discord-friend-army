@@ -53,7 +53,7 @@ class _FakeAsyncClient:
                 'errorId': 0,
                 'status': 'ready',
                 'cost': '0.0025',
-                'solution': {'gRecaptchaResponse': 'solved-token', 'rqtoken': 'rq-token'},
+                'solution': {'token': 'solved-token', 'rqtoken': 'rq-token'},
             })
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown endpoint'}, status_code=400)
 
@@ -77,7 +77,7 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
                 'errorId': 0,
                 'status': 'ready',
                 'cost': '0.003',
-                'solution': {'gRecaptchaResponse': 'late-token', 'rqtoken': 'late-rqtoken'},
+                'solution': {'token': 'late-token', 'rqtoken': 'late-rqtoken'},
             })
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
 
@@ -132,7 +132,7 @@ def test_solver_enabled_from_env(monkeypatch):
 
 def test_solver_ready_flow_and_task_type(monkeypatch):
     monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
-    monkeypatch.setenv('DFA_CAPTCHA_TASK_TYPE', 'HCaptchaTaskProxyless')
+    monkeypatch.setenv('DFA_CAPTCHA_TASK_TYPE', 'PopularCaptchaEnterpriseInvisibleTokenProxyLess')
     get_settings.cache_clear()
 
     fake_client = _FakeAsyncClient()
@@ -172,9 +172,12 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
 
     # Verify correct task body was sent to AnySolver.
     create_call = fake_client.posts[0]
-    assert create_call['json']['task']['type'] == 'HCaptchaTaskProxyless'
+    assert create_call['json']['task']['type'] == 'PopularCaptchaEnterpriseInvisibleTokenProxyLess'
     assert create_call['json']['task']['rqdata'] == 'rq-data'
-    assert create_call['json']['task']['data'] == 'rq-data'
+    # data field must NOT be present (not valid for PopularCaptcha* task types)
+    assert 'data' not in create_call['json']['task']
+    # userAgent must NOT be present (not valid for PopularCaptcha* task types)
+    assert 'userAgent' not in create_call['json']['task']
     assert create_call['json']['task']['websiteURL'] == 'https://discord.com'
     assert create_call['json']['task']['websiteKey'] == 'site-key'
 

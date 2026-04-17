@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     # Obtain your API key from https://anysolver.com/dashboard
     anysolver_api_key: str = Field(default='')
     anysolver_base_url: str = Field(default='https://api.anysolver.com')
-    # Task type submitted to AnySolver. HCaptchaTaskProxyless is correct for Discord.
-    captcha_task_type: str = Field(default='HCaptchaTaskProxyless')
+    # Task type submitted to AnySolver.
+    # Discord uses enterprise invisible hCaptcha → PopularCaptchaEnterpriseInvisibleTokenProxyLess.
+    # Override with DFA_CAPTCHA_TASK_TYPE if your target Discord endpoint uses a different variant.
+    captcha_task_type: str = Field(default='PopularCaptchaEnterpriseInvisibleTokenProxyLess')
     # TLS verification for AnySolver requests. Set to false only for troubleshooting.
     captcha_ssl_verify: bool = Field(default=True)
     # Optional path to a custom CA bundle file.

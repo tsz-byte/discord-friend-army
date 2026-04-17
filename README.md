@@ -37,7 +37,7 @@ TEMPERATURE=0.7
 RESPONSE_TIMEOUT=30
 ANYSOLVER_API_KEY=your-anysolver-key
 ANYSOLVER_BASE_URL=https://api.anysolver.com
-CAPTCHA_TASK_TYPE=HCaptchaTaskProxyless
+CAPTCHA_TASK_TYPE=PopularCaptchaEnterpriseInvisibleTokenProxyLess
 CAPTCHA_SSL_VERIFY=true
 ```
 
@@ -140,7 +140,7 @@ Discord uses hCaptcha for bot protection.  The only supported solver is **AnySol
 |---|---|
 | `ANYSOLVER_API_KEY` | API key from your AnySolver dashboard (required) |
 | `ANYSOLVER_BASE_URL` | Override the API base URL (default: `https://api.anysolver.com`) |
-| `CAPTCHA_TASK_TYPE` | AnySolver task type (default: `HCaptchaTaskProxyless`) |
+| `CAPTCHA_TASK_TYPE` | AnySolver task type (default: `PopularCaptchaEnterpriseInvisibleTokenProxyLess`) |
 | `CAPTCHA_SSL_VERIFY` | Set to `false` only for troubleshooting weak certificates |
 | `CAPTCHA_CA_BUNDLE_PATH` | Path to a custom CA bundle file |
 

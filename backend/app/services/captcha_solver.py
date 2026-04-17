@@ -18,30 +18,37 @@ DEFAULT_ANYSOLVER_BASE_URL = 'https://api.anysolver.com'
 
 
 class CaptchaSolverService:
-    """AnySolver-only captcha solver for Discord hCaptcha challenges.
+    """AnySolver-only captcha solver for Discord PopularCaptcha (hCaptcha) challenges.
 
     Flow
     ----
     1. POST /createTask  → receive taskId
     2. Poll /getTaskResult with exponential back-off until status == 'ready'
-    3. Extract gRecaptchaResponse (token) and rqtoken from the solution
+    3. Extract ``token`` (primary) from the solution and ``rqtoken`` if present
     4. Return captcha_key / captcha_rqtoken / captcha_rqdata to the caller
 
     Discord-specific notes
     ----------------------
-    * ``captcha_sitekey``  — hCaptcha sitekey embedded in the Discord 400 error payload
-    * ``captcha_rqdata``   — extra token required by Discord; pass to AnySolver as both
-                             ``rqdata`` and ``data`` fields in the task body
-    * ``captcha_rqtoken``  — returned by AnySolver after solving; echo it back to Discord
-                             alongside ``captcha_key`` in the retry request body
+    * Discord uses enterprise invisible hCaptcha, solved via AnySolver task type
+      ``PopularCaptchaEnterpriseInvisibleTokenProxyLess`` (configurable).
+    * ``captcha_sitekey``  — sitekey embedded in the Discord 400 error payload
+    * ``captcha_rqdata``   — extra token required by Discord; pass to AnySolver as ``rqdata``
+    * ``captcha_rqtoken``  — returned by AnySolver (or echoed from Discord); sent back to
+                             Discord alongside ``captcha_key`` in the retry request body
+
+    AnySolver task body fields (PopularCaptcha* types)
+    ---------------------------------------------------
+    Required: type, websiteURL, websiteKey
+    Optional: rqdata, sessionId
+    Solution response: solution.token
     """
 
     def __init__(self) -> None:
         settings = get_settings()
         self.api_key: str = settings.anysolver_api_key
         self.base_url: str = (settings.anysolver_base_url or DEFAULT_ANYSOLVER_BASE_URL).rstrip('/')
-        # Task type sent to AnySolver. HCaptchaTaskProxyless is the correct type
-        # for Discord's hCaptcha; override via DFA_CAPTCHA_TASK_TYPE if needed.
+        # Task type sent to AnySolver.
+        # Discord requires PopularCaptchaEnterpriseInvisibleTokenProxyLess.
         self.task_type: str = settings.captcha_task_type
         self.poll_attempts: int = 20
         self.poll_base_delay_seconds: float = 2.0
@@ -183,24 +190,18 @@ class CaptchaSolverService:
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
 
-        # Build the AnySolver task body.
-        # rqdata is sent as both 'rqdata' and 'data' for maximum provider
-        # compatibility as noted in AnySolver's hCaptcha documentation.
+        # Build the AnySolver PopularCaptcha* task body.
+        # AnySolver's PopularCaptcha task types accept: type, websiteURL,
+        # websiteKey, rqdata (optional), sessionId (optional).
+        # Do NOT include userAgent, isInvisible, data, or pageTitle — those are
+        # not valid fields for PopularCaptcha* task types.
         task_body: dict = {
             'type': self.task_type,
             'websiteURL': website_url,
             'websiteKey': sitekey,
-            'userAgent': user_agent,
         }
-        page_title = challenge_payload.get('captcha_page_title') or challenge_payload.get('pageTitle')
-        if page_title:
-            task_body['pageTitle'] = str(page_title)
-        if challenge_payload.get('captcha_is_invisible') is not None:
-            task_body['isInvisible'] = bool(challenge_payload.get('captcha_is_invisible'))
         if rqdata:
-            rqdata_str = str(rqdata)
-            task_body['rqdata'] = rqdata_str
-            task_body['data'] = rqdata_str
+            task_body['rqdata'] = str(rqdata)
         if session_id:
             task_body['sessionId'] = str(session_id)
 
@@ -269,17 +270,11 @@ class CaptchaSolverService:
                     return {'status': 'failed', 'detail': str(detail), 'task_id': task_id, 'attempts': attempt}
                 if status == 'ready':
                     solution = poll_data.get('solution') or {}
-                    # AnySolver returns the hCaptcha solution token as
-                    # ``gRecaptchaResponse`` (the primary key for all hCaptcha
-                    # task types).  ``token`` and ``hcaptchaResponse`` are
-                    # accepted as legacy / alternate field names to guard
-                    # against future API shape changes.
-                    token = (
-                        solution.get('gRecaptchaResponse')
-                        or solution.get('token')
-                        or solution.get('hcaptchaResponse')
-                    )
-                    # rqtoken is required by Discord's hCaptcha validation.
+                    # AnySolver returns the solved token as ``token`` for all
+                    # PopularCaptcha* task types.  ``gRecaptchaResponse`` is
+                    # accepted as a fallback for any future API shape changes.
+                    token = solution.get('token') or solution.get('gRecaptchaResponse')
+                    # rqtoken is required by Discord's challenge validation.
                     rqtoken = solution.get('rqtoken') or existing_rqtoken
                     if not token:
                         return {
