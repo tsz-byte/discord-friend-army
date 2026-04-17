@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.models.research import CaptchaChallenge
 
 logger = logging.getLogger('discord_research.captcha_solver')
+MAX_ERROR_LENGTH = 500
 
 
 class CaptchaSolverService:
@@ -165,7 +166,8 @@ class CaptchaSolverService:
         return {}
 
     def _backoff_seconds(self, attempt: int) -> float:
-        return min(self.poll_max_delay_seconds, self.poll_base_delay_seconds * (2 ** max(0, attempt - 1)))
+        exponent = min(max(0, attempt - 1), 4)
+        return min(self.poll_max_delay_seconds, self.poll_base_delay_seconds * (2 ** exponent))
 
     async def _mark_failed(
         self,
@@ -178,7 +180,7 @@ class CaptchaSolverService:
     ) -> dict:
         if challenge_row is not None and db is not None:
             challenge_row.solver_status = 'failed'
-            challenge_row.error = detail[:500]
+            challenge_row.error = detail[:MAX_ERROR_LENGTH]
             if task_id is not None:
                 challenge_row.task_id = task_id
             if attempts is not None:
