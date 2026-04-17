@@ -49,6 +49,18 @@ def test_captcha_challenge_detection():
     assert not CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k'})
 
 
+def test_solver_enabled_from_env(monkeypatch):
+    monkeypatch.delenv('DFA_ANYSOLVER_API_KEY', raising=False)
+    get_settings.cache_clear()
+    assert CaptchaSolverService().is_enabled is False
+
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'configured-key')
+    get_settings.cache_clear()
+    assert CaptchaSolverService().is_enabled is True
+
+    get_settings.cache_clear()
+
+
 async def _sleep_noop(*args, **kwargs):
     return None
 

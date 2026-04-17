@@ -108,3 +108,8 @@ def test_patch_nickname_uses_members_me(monkeypatch):
 
     assert result['status'] == 'updated'
     assert fake_client.last_url.endswith('/guilds/123/members/@me')
+
+    __import__('asyncio').run(
+        client.patch_member_nickname('123', 'different-user', 'nick', 'token')
+    )
+    assert fake_client.last_url.endswith('/guilds/123/members/@me')

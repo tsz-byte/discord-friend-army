@@ -12,6 +12,8 @@ from app.models.research import CaptchaChallenge
 
 logger = logging.getLogger('discord_research.captcha_solver')
 MAX_ERROR_LENGTH = 500
+# Cap exponential growth so polling delays remain bounded and predictable.
+BACKOFF_MAX_EXPONENT = 4
 
 
 class CaptchaSolverService:
@@ -166,7 +168,7 @@ class CaptchaSolverService:
         return {}
 
     def _backoff_seconds(self, attempt: int) -> float:
-        exponent = min(max(0, attempt - 1), 4)
+        exponent = min(max(0, attempt - 1), BACKOFF_MAX_EXPONENT)
         return min(self.poll_max_delay_seconds, self.poll_base_delay_seconds * (2 ** exponent))
 
     async def _mark_failed(
