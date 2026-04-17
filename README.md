@@ -145,9 +145,10 @@ Discord uses hCaptcha for bot protection.  The only supported solver is **AnySol
 | `CAPTCHA_CA_BUNDLE_PATH` | Path to a custom CA bundle file |
 
 When a Discord invite join returns a captcha challenge (HTTP 400 with `captcha_sitekey`), the system automatically:
-1. Creates an AnySolver task with `rqdata` / `data` fields and the correct `userAgent`
-2. Polls `getTaskResult` until the token is ready
-3. Retries the Discord invite join with `captcha_key` + `captcha_rqtoken` in the request body
+1. Creates an AnySolver Discord session (`PopularPlatformSessionAction`) and gets `solution.sessionId`
+2. Creates an AnySolver captcha task with `websiteURL`, `websiteKey`, `rqdata` (if present), and `sessionId`
+3. Polls `getTaskResult` until the token is ready
+4. Retries the Discord invite join with `captcha_key` + `captcha_rqtoken` (and `captcha_rqdata` when required)
 
 - `GET /api/v1/analytics/sentiment-trend?guild_id=...`
 - `GET /api/v1/analytics/activity-heatmap?guild_id=...`
