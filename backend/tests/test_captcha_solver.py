@@ -82,6 +82,9 @@ def test_captcha_challenge_detection():
     assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k'})
     assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k', 'captcha_rqdata': 'r'})
     assert not CaptchaSolverService.is_captcha_challenge({'captcha_rqdata': 'r'})
+    assert not CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': ''})
+    assert not CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': None})
+    assert not CaptchaSolverService.is_captcha_challenge(None)
 
 
 def test_solver_enabled_from_env(monkeypatch):
