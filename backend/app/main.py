@@ -29,9 +29,41 @@ app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(Exception, generic_error_handler)
 
 
+def _run_schema_migrations() -> None:
+    """Apply lightweight ADD COLUMN migrations for columns added after initial table creation.
+
+    SQLAlchemy's ``create_all`` only creates missing tables; it never adds columns to
+    existing ones.  When a new nullable column is introduced we add it here so that
+    existing deployments automatically pick it up on the next startup without requiring
+    a full migration framework.
+    """
+    import logging
+
+    _logger = logging.getLogger('discord_research.db')
+    migrations: list[tuple[str, str, str]] = [
+        # (table, column, column_definition)
+        ('captcha_challenge', 'anysolver_session_id', 'VARCHAR(128)'),
+    ]
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        for table, column, col_def in migrations:
+            try:
+                existing_columns = {c['name'] for c in inspector.get_columns(table)}
+            except Exception:
+                # Table doesn't exist yet — create_all will handle it.
+                continue
+            if column not in existing_columns:
+                _logger.info('schema_migration: adding column %s.%s', table, column)
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {col_def}'))
+                conn.commit()
+
+
 @app.on_event('startup')
 async def startup_event() -> None:
     Base.metadata.create_all(bind=engine)
+    _run_schema_migrations()
 
     # Auto-start the replication loop if there are tokens + mappings in the DB.
     # We do this in a best-effort fashion — the loop itself logs any errors.
