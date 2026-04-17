@@ -28,13 +28,20 @@ pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
 proxy-server.com:8080:username:password
 ```
 
-**`api_key.conf`** — OpenRouter + AnySolver API configuration:
+**`api_key.conf`** — OpenRouter + captcha solver configuration:
 ```
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxx
 AI_MODEL=x-ai/grok-4.1-fast
 MAX_TOKENS=4096
 TEMPERATURE=0.7
 RESPONSE_TIMEOUT=30
+CAPTCHA_SERVICE=anysolver
+CAPTCHA_TASK_TYPE=PopularCaptchaTokenProxyLess
+CAPTCHA_SSL_VERIFY=true
+CAPTCHA_API_KEY=your-primary-captcha-key
+CAPTCHA_2CAPTCHA_API_KEY=
+ANTICAPTCHA_API_KEY=
+DEATHBYCAPTCHA_API_KEY=
 ANYSOLVER_API_KEY=your-anysolver-key
 ```
 
@@ -75,7 +82,7 @@ discord-friend-army/
 │   │   │   ├── file_loader.py       # t.txt / p.txt / api_key.conf parser
 │   │   │   ├── token_manager.py     # Token rotation + health checks
 │   │   │   ├── discord_client.py    # Discord API client
-│   │   │   ├── captcha_solver.py    # AnySolver captcha integration
+│   │   │   ├── captcha_solver.py    # Multi-service captcha solver (AnySolver/2Captcha/AntiCaptcha/DeathByCaptcha)
 │   │   │   ├── replication_engine.py# Conversation mirroring engine
 │   │   │   ├── pattern_analyzer.py  # Message pattern capture
 │   │   │   └── ...
@@ -128,6 +135,14 @@ discord-friend-army/
 
 ### Analytics
 - `GET /api/v1/analytics/overview?guild_id=...`
+
+## Captcha Configuration Notes
+
+- `CAPTCHA_SERVICE` accepts `anysolver`, `2captcha`, `anticaptcha`, `deathbycaptcha` (or comma-separated priority order).
+- `CAPTCHA_FALLBACK_SERVICES` configures automatic fallback order if the primary service fails.
+- `CAPTCHA_TASK_TYPE` is fully configurable for hCaptcha/reCaptcha task variants required by your provider.
+- `CAPTCHA_SSL_VERIFY=false` bypasses TLS verification (only for troubleshooting weak provider certificates).
+- `CAPTCHA_CA_BUNDLE_PATH` can be used to trust a custom CA bundle instead of disabling verification.
 - `GET /api/v1/analytics/sentiment-trend?guild_id=...`
 - `GET /api/v1/analytics/activity-heatmap?guild_id=...`
 
