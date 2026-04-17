@@ -255,6 +255,11 @@ class DiscordClient:
                             captcha_payload = {'captcha_key': solve_result.get('captcha_key')}
                             if solve_result.get('captcha_rqtoken'):
                                 captcha_payload['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
+                            captcha_rqdata = solve_result.get('captcha_rqdata')
+                            if captcha_rqdata:
+                                # Some Discord challenges require rqdata to be echoed
+                                # alongside the solved token on retry.
+                                captcha_payload['captcha_rqdata'] = captcha_rqdata
                             continue
                         return {
                             'status': 'failed',

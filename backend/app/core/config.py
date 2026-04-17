@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     openrouter_max_tokens: int = Field(default=4096)
     openrouter_temperature: float = Field(default=0.7)
     openrouter_response_timeout: int = Field(default=30)
+
+    captcha_service: str = Field(default='anysolver')
+    captcha_fallback_services: str = Field(default='2captcha,anticaptcha,deathbycaptcha')
+    captcha_api_key: str = Field(default='')
+    captcha_base_url: str = Field(default='')
+    captcha_task_type: str = Field(default='PopularCaptchaTokenProxyLess')
+    captcha_ssl_verify: bool = Field(default=True)
+    captcha_ca_bundle_path: str = Field(default='')
+    captcha_2captcha_api_key: str = Field(default='')
+    anticaptcha_api_key: str = Field(default='')
+    deathbycaptcha_api_key: str = Field(default='')
+
     anysolver_api_key: str = Field(default='')
     anysolver_base_url: str = Field(default='https://api.anysolver.com')
 
