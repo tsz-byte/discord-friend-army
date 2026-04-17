@@ -218,6 +218,16 @@ class SettingsBulkUpdateRequest(BaseModel):
     settings: dict[str, str]
 
 
+class RuntypeSettingResponse(BaseModel):
+    runtype: str
+    bot_token_configured: bool
+
+
+class RuntypeSettingUpdateRequest(BaseModel):
+    runtype: str = Field(pattern='^(USERT|BOTT)$')
+    discord_bot_token: str | None = None
+
+
 class AppSettingResponse(BaseModel):
     key: str
     value: str | None

@@ -70,7 +70,7 @@ async def startup_event() -> None:
     try:
         from app.db.session import SessionLocal
         from app.models.research import AccountToken, ChannelMapping, AppSetting
-        from app.services import auto_replication
+        from app.services import auto_replication, realtime_listener
         from app.services.token_manager import TokenManagerService
 
         db = SessionLocal()
@@ -82,12 +82,25 @@ async def startup_event() -> None:
             for token_row in token_rows:
                 await manager.health_check(db, token_row)
 
-            # Read stored interval setting if present.
+            # Read stored interval settings.
             interval_row = db.query(AppSetting).filter(AppSetting.key == 'auto_loop_interval_seconds').first()
             interval = int(interval_row.value) if (interval_row and interval_row.value) else 180
 
+            rt_interval_row = db.query(AppSetting).filter(AppSetting.key == 'realtime_interval_ms').first()
+            rt_interval_ms = int(rt_interval_row.value) if (rt_interval_row and rt_interval_row.value) else 1500
+
             if active_tokens > 0 and enabled_mappings > 0:
                 auto_replication.start_loop(interval_seconds=interval)
+
+            # Auto-start the real-time listener whenever enabled channel mappings
+            # exist — works for both USERT (user tokens) and BOTT (bot token) modes.
+            if enabled_mappings > 0:
+                realtime_listener.start_listener(interval_ms=rt_interval_ms)
+                import logging as _logging
+                _logging.getLogger('discord_research').info(
+                    'startup: realtime_listener auto-started (interval_ms=%d, mappings=%d)',
+                    rt_interval_ms, enabled_mappings,
+                )
         finally:
             db.close()
     except Exception as exc:  # pragma: no cover

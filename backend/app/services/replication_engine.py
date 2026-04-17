@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.research import (
     AccountToken,
+    AppSetting,
     ChannelMapping,
     ConversationMirrorEvent,
     CoordinationEvent,
@@ -80,6 +81,7 @@ class ConversationReplicationEngine:
 
         generated: list[dict] = []
         response_times: list[int] = []
+        runtype = self._read_runtype(db)
         if mapping is None:
             logger.warning(
                 'run_session: no enabled channel mapping for %s → %s; session marked failed',
@@ -136,6 +138,10 @@ class ConversationReplicationEngine:
                     'responder_account_label': token.label,
                     'context_aware': context_aware,
                     'response_time_ms': response_time_ms,
+                    'delivery_mode': 'webhook' if runtype == 'BOTT' else 'token',
+                    'webhook_identity': {
+                        'username': token.label,
+                    } if runtype == 'BOTT' else {},
                 },
                 # Items start as 'queued'; actual Discord HTTP sends are handled
                 # by the async auto-replication dispatcher (auto_replication.py)
@@ -215,3 +221,14 @@ class ConversationReplicationEngine:
             )
         )
         db.commit()
+
+    @staticmethod
+    def _read_runtype(db: Session) -> str:
+        row = db.query(AppSetting).filter(AppSetting.key == 'runtype').first()
+        if row and row.value:
+            value = row.value.strip().upper()
+            if value in {'USERT', 'BOTT'}:
+                return value
+        from app.core.config import get_settings
+
+        return get_settings().runtype
