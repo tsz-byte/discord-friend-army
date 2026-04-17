@@ -25,6 +25,18 @@ from app.services.token_manager import TokenManagerService
 router = APIRouter(prefix='/tools', tags=['tools'])
 discord_client = DiscordClient()
 token_manager = TokenManagerService()
+DEFAULT_CLAN_TAG_GENERATE_COUNT = 20
+NICKNAME_CHANGE_DELAY_SECONDS = 5
+TYPING_INDICATOR_INTERVAL_SECONDS = 4
+
+
+def _safe_error_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.lower()
+    if 'traceback' in lowered or 'file \"' in lowered:
+        return 'internal_error'
+    return value[:300]
 
 
 class ServerJoinRequest(BaseModel):
@@ -307,7 +319,7 @@ def clan_tag_status(db: Session = Depends(get_db)):
 @router.post('/clan-tag/bulk-generate')
 def clan_tag_bulk_generate(request: ClanTagGenerateRequest):
     output = []
-    for idx in range(20):
+    for idx in range(DEFAULT_CLAN_TAG_GENERATE_COUNT):
         num = request.start_number + idx
         output.append(
             request.template
@@ -370,7 +382,7 @@ async def nickname_change(request: NicknameChangeRequest, db: Session = Depends(
         db.add(row)
         db.commit()
         results.append({'token_id': token_id, **result})
-        await asyncio.sleep(5)
+        await asyncio.sleep(NICKNAME_CHANGE_DELAY_SECONDS)
     return {'results': results}
 
 
@@ -515,7 +527,7 @@ async def mimic_typing_simulator(request: TypingSimulatorRequest, db: Session = 
     end_at = datetime.now(timezone.utc).timestamp() + request.duration_seconds
     while datetime.now(timezone.utc).timestamp() < end_at:
         await discord_client.trigger_typing(request.channel_id, token_row.token_value, _proxy_for_token(token_row))
-        await asyncio.sleep(4)
+        await asyncio.sleep(TYPING_INDICATOR_INTERVAL_SECONDS)
 
     send_result = None
     if request.then_send:
@@ -525,7 +537,13 @@ async def mimic_typing_simulator(request: TypingSimulatorRequest, db: Session = 
             token=token_row.token_value,
             proxy_url=_proxy_for_token(token_row),
         )
-    return {'status': 'completed', 'then_send_result': send_result}
+    return {
+        'status': 'completed',
+        'then_send_result': {
+            'status': send_result.get('status') if isinstance(send_result, dict) else None,
+            'code': send_result.get('code') if isinstance(send_result, dict) else None,
+        } if send_result else None,
+    }
 
 
 @router.get('/mimic/patterns')
@@ -599,7 +617,7 @@ async def conversation_transfer_with_context(request: ConversationTransferReques
         if result.get('status') == 'sent':
             sent += 1
         else:
-            errors.append(result.get('detail', 'unknown error'))
+            errors.append(_safe_error_text(result.get('detail')) or 'unknown error')
         if request.randomize_delays:
             await asyncio.sleep(random.uniform(0.5, 1.8))
 
@@ -615,7 +633,7 @@ async def conversation_transfer_with_context(request: ConversationTransferReques
     )
     db.add(row)
     db.commit()
-    return {'messages_sent': sent, 'errors': errors, 'transfer_id': row.id}
+    return {'messages_sent': sent, 'error_count': len(errors), 'transfer_id': row.id}
 
 
 @router.get('/conversation/available-channels')

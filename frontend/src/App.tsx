@@ -145,7 +145,7 @@ function App() {
   // Conversation transfer
   const [convSourceChannel, setConvSourceChannel] = useState(sourceChannelId)
   const [convTargetChannel, setConvTargetChannel] = useState(targetChannelId)
-  const [convTransferResult, setConvTransferResult] = useState<{ messages_sent: number; errors: string[] } | null>(null)
+  const [convTransferResult, setConvTransferResult] = useState<{ messages_sent: number; error_count: number } | null>(null)
 
   const trendSvgRef = useRef<SVGSVGElement | null>(null)
   const flowSvgRef = useRef<SVGSVGElement | null>(null)
@@ -666,7 +666,7 @@ function App() {
         }),
       })
       if (!res.ok) throw new Error(`Transfer failed (HTTP ${res.status})`)
-      const data = await res.json() as { messages_sent: number; errors: string[] }
+      const data = await res.json() as { messages_sent: number; error_count: number }
       setConvTransferResult(data)
       flash('Conversation transfer completed')
     } catch (err) { setError(err instanceof Error ? err.message : 'Conversation transfer error') }
@@ -1443,7 +1443,7 @@ function App() {
               {convTransferResult && (
                 <div className="stat-cards mini" style={{ marginTop: 12 }}>
                   <div className="stat-card-mini"><strong>{convTransferResult.messages_sent}</strong><span>Messages Sent</span></div>
-                  <div className="stat-card-mini"><strong>{convTransferResult.errors.length}</strong><span>Errors</span></div>
+                  <div className="stat-card-mini"><strong>{convTransferResult.error_count}</strong><span>Errors</span></div>
                 </div>
               )}
             </section>

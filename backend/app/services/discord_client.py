@@ -229,8 +229,8 @@ class DiscordClient:
                     if resp.status_code == 204:
                         return {'status': 'already_joined'}
                     if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
-                        retry_after = self._retry_after_seconds(resp)
-                        await self._sleep_before_retry(attempt, retry_after=retry_after)
+                        retry_after_seconds = self._retry_after_seconds(resp)
+                        await self._sleep_before_retry(attempt, retry_after_seconds=retry_after_seconds)
                         continue
                     return {
                         'status': 'failed',
@@ -272,7 +272,7 @@ class DiscordClient:
                             'detail': payload.get('message', resp.text[:200]),
                         }
                     if resp.status_code == 429 and attempt < max_attempts:
-                        await self._sleep_before_retry(attempt, retry_after=self._retry_after_seconds(resp))
+                        await self._sleep_before_retry(attempt, retry_after_seconds=self._retry_after_seconds(resp))
                         continue
                     if resp.status_code >= 500 and attempt < max_attempts:
                         await self._sleep_before_retry(attempt)
@@ -434,9 +434,9 @@ class DiscordClient:
         return value if re.fullmatch(r'[a-zA-Z0-9-]{2,100}', value) else ''
 
     @staticmethod
-    async def _sleep_before_retry(attempt: int, retry_after: float | None = None) -> None:
-        if retry_after is not None and retry_after > 0:
-            await asyncio.sleep(min(10.0, retry_after + random.uniform(0.0, RETRY_JITTER_SECONDS)))
+    async def _sleep_before_retry(attempt: int, retry_after_seconds: float | None = None) -> None:
+        if retry_after_seconds is not None and retry_after_seconds > 0:
+            await asyncio.sleep(min(10.0, retry_after_seconds + random.uniform(0.0, RETRY_JITTER_SECONDS)))
             return
         await asyncio.sleep(min(RETRY_MAX_SLEEP_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, RETRY_JITTER_SECONDS))
 

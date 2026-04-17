@@ -44,6 +44,12 @@ _BREAKER_THRESHOLD = 3
 _BREAKER_OPEN_SECONDS = 30
 
 
+def _record_mapping_failure(mapping_id: int, mapping_failures: dict[int, int], mapping_breaker_until: dict[int, float]) -> None:
+    mapping_failures[mapping_id] = mapping_failures.get(mapping_id, 0) + 1
+    if mapping_failures[mapping_id] >= _BREAKER_THRESHOLD:
+        mapping_breaker_until[mapping_id] = datetime.now(timezone.utc).timestamp() + _BREAKER_OPEN_SECONDS
+
+
 def get_status() -> dict:
     return {
         'active': _active,
@@ -242,9 +248,7 @@ async def _listener_loop() -> None:
                             if result.get('code') in (401, 403):
                                 send_token_row.health_status = 'invalid'
                                 send_token_row.is_active = False
-                            mapping_failures[mapping.id] = mapping_failures.get(mapping.id, 0) + 1
-                            if mapping_failures[mapping.id] >= _BREAKER_THRESHOLD:
-                                mapping_breaker_until[mapping.id] = datetime.now(timezone.utc).timestamp() + _BREAKER_OPEN_SECONDS
+                            _record_mapping_failure(mapping.id, mapping_failures, mapping_breaker_until)
                             logger.warning(
                                 'realtime_listener: send failed ch=%s token=%s: %s',
                                 mapping.target_channel_id,
@@ -255,9 +259,7 @@ async def _listener_loop() -> None:
                         event.status = 'failed'
                         event.error = str(exc)
                         _stats['failed'] = _stats.get('failed', 0) + 1
-                        mapping_failures[mapping.id] = mapping_failures.get(mapping.id, 0) + 1
-                        if mapping_failures[mapping.id] >= _BREAKER_THRESHOLD:
-                            mapping_breaker_until[mapping.id] = datetime.now(timezone.utc).timestamp() + _BREAKER_OPEN_SECONDS
+                        _record_mapping_failure(mapping.id, mapping_failures, mapping_breaker_until)
                         logger.error('realtime_listener: exception sending: %s', exc, exc_info=True)
 
                     db.commit()
