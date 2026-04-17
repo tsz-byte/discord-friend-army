@@ -542,11 +542,6 @@ def list_patterns(source_guild_id: str, db: Session = Depends(get_db)):
 
 @router.post('/replication/control/start', response_model=ReplicationResponse)
 def start_replication(request: ReplicationStartRequest, db: Session = Depends(get_db)):
-    if not settings.educational_replication_only:
-        raise HTTPException(status_code=400, detail='Replication feature must run in educational-only mode')
-    if not request.educational_mode_confirmed:
-        raise HTTPException(status_code=400, detail='Educational mode confirmation is required')
-
     source_connection = (
         db.query(ServerConnection)
         .filter(ServerConnection.guild_id == request.source_guild_id, ServerConnection.role == 'source', ServerConnection.enabled.is_(True))
@@ -608,7 +603,7 @@ def enqueue_replication_message(request: ReplicationControlRequest, db: Session 
         session = ReplicationSession(
             source_guild_id=request.source_guild_id,
             target_guild_id=request.target_guild_id,
-            mode='educational_controlled',
+            mode='controlled',
             status='running',
             account_plan=[],
             session_metrics={'manual_queue': True},
@@ -769,7 +764,6 @@ def replication_system_status(db: Session = Depends(get_db)):
 @router.get('/replication/config')
 def replication_config_snapshot():
     return {
-        'educational_replication_only': settings.educational_replication_only,
         'discord_api_base_url': settings.discord_api_base_url,
         'discord_requests_per_minute': settings.discord_requests_per_minute,
         'analytics_cache_ttl_seconds': settings.analytics_cache_ttl_seconds,
@@ -1201,14 +1195,14 @@ async def join_server_with_onboarding(
 def compliance_methodology() -> ComplianceMethodology:
     return ComplianceMethodology(
         methodology_version='2026.04',
-        consent_model='Server-level opt-in plus participant-level transparency and opt-out controls; educational replication runs require explicit confirmation',
+        consent_model='Server-level opt-in plus participant-level transparency and opt-out controls',
         anonymization='All user identifiers are salted SHA-256 hashes; only redacted message excerpts and masked token previews are exposed',
         retention_policy='Default 90-day retention with configurable deletion policies for GDPR/CCPA requests and controlled-environment replication datasets',
         publication_support=[
             'Export-ready aggregate metrics',
             'Anonymized interaction network snapshots',
             'Methodology and limitation documentation endpoints',
-            'Educational conversation replication session metadata with account masking',
+            'Conversation replication session metadata with account masking',
         ],
     )
 

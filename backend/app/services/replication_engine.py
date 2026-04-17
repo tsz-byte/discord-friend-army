@@ -67,7 +67,7 @@ class ConversationReplicationEngine:
         session = ReplicationSession(
             source_guild_id=source_guild_id,
             target_guild_id=target_guild_id,
-            mode='educational_controlled',
+            mode='controlled',
             status='running',
             account_plan=[
                 {'id': t.id, 'label': t.label, 'proxy_host': t.proxy_host, 'proxy_port': t.proxy_port}

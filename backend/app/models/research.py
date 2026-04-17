@@ -71,7 +71,7 @@ class ServerConnection(Base):
     invite_link = Column(String(512), nullable=True)
     enabled = Column(Boolean, default=True, nullable=False)
     joined_status = Column(String(32), default='pending', nullable=False)
-    research_scope = Column(String(255), nullable=False, default='educational_replication')
+    research_scope = Column(String(255), nullable=False, default='replication')
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -96,7 +96,7 @@ class ReplicationSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     source_guild_id = Column(String(32), nullable=False, index=True)
     target_guild_id = Column(String(32), nullable=False, index=True)
-    mode = Column(String(32), nullable=False, default='educational_controlled')
+    mode = Column(String(32), nullable=False, default='controlled')
     status = Column(String(32), nullable=False, default='idle')
     account_plan = Column(JSON, nullable=False, default=list)
     session_metrics = Column(JSON, nullable=False, default=dict)
