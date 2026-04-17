@@ -213,11 +213,20 @@ def test_solver_persists_processing_then_ready(monkeypatch):
 
 
 def test_solver_no_rqdata(monkeypatch):
-    """Challenges without rqdata (sitekey-only) should still be solved."""
+    """Challenges without rqdata (sitekey-only) should still be solved,
+    and the task body must NOT include rqdata/data keys."""
     monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
     get_settings.cache_clear()
 
-    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _FakeAsyncClient)
+    captured: list[_FakeAsyncClient] = []
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            client = _FakeAsyncClient(*args, **kwargs)
+            captured.append(client)
+            return client
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
     monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
 
     result = asyncio.run(
@@ -230,6 +239,12 @@ def test_solver_no_rqdata(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'solved-token'
     assert result['captcha_rqdata'] is None
+
+    # Verify rqdata/data keys are absent from the task body.
+    assert captured, 'Expected at least one httpx.AsyncClient to be created'
+    create_body = captured[0].posts[0]['json']
+    assert 'rqdata' not in create_body['task']
+    assert 'data' not in create_body['task']
 
     get_settings.cache_clear()
 

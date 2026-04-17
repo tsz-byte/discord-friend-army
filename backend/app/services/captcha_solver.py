@@ -14,7 +14,7 @@ logger = logging.getLogger('discord_research.captcha_solver')
 MAX_ERROR_LENGTH = 500
 BACKOFF_MAX_EXPONENT = 4
 # Default AnySolver endpoint — override with DFA_ANYSOLVER_BASE_URL if needed.
-ANYSOLVER_BASE_URL = 'https://api.anysolver.com'
+DEFAULT_ANYSOLVER_BASE_URL = 'https://api.anysolver.com'
 
 
 class CaptchaSolverService:
@@ -39,7 +39,7 @@ class CaptchaSolverService:
     def __init__(self) -> None:
         settings = get_settings()
         self.api_key: str = settings.anysolver_api_key
-        self.base_url: str = (settings.anysolver_base_url or ANYSOLVER_BASE_URL).rstrip('/')
+        self.base_url: str = (settings.anysolver_base_url or DEFAULT_ANYSOLVER_BASE_URL).rstrip('/')
         # Task type sent to AnySolver. HCaptchaTaskProxyless is the correct type
         # for Discord's hCaptcha; override via DFA_CAPTCHA_TASK_TYPE if needed.
         self.task_type: str = settings.captcha_task_type
@@ -269,7 +269,11 @@ class CaptchaSolverService:
                     return {'status': 'failed', 'detail': str(detail), 'task_id': task_id, 'attempts': attempt}
                 if status == 'ready':
                     solution = poll_data.get('solution') or {}
-                    # AnySolver returns hCaptcha tokens as gRecaptchaResponse.
+                    # AnySolver returns the hCaptcha solution token as
+                    # ``gRecaptchaResponse`` (the primary key for all hCaptcha
+                    # task types).  ``token`` and ``hcaptchaResponse`` are
+                    # accepted as legacy / alternate field names to guard
+                    # against future API shape changes.
                     token = (
                         solution.get('gRecaptchaResponse')
                         or solution.get('token')
