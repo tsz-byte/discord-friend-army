@@ -177,9 +177,17 @@ async def server_joiner_join(request: ServerJoinRequest, db: Session = Depends(g
             invite_code=code,
             token=token_row.token_value,
             proxy_url=_proxy_for_token(token_row, request.use_proxies),
+            token_id=token_row.id,
+            guild_id=request.guild_id,
+            db=db,
         )
         if result.get('code') in (401, 403):
-            token_manager.mark_unhealthy(db, token_row, status='invalid')
+            token_manager.mark_unhealthy(
+                db,
+                token_row,
+                status='invalid',
+                deactivate=result.get('code') == 401,
+            )
         row = ServerJoinHistory(
             token_id=token_row.id,
             guild_id=request.guild_id,
@@ -225,9 +233,21 @@ async def server_joiner_bulk_join(request: ServerBulkJoinRequest, db: Session = 
 
     async def _run(invite: str, token_row: AccountToken):
         async with semaphore:
-            result = await discord_client.join_guild_via_invite(invite, token_row.token_value, _proxy_for_token(token_row))
+            result = await discord_client.join_guild_via_invite(
+                invite,
+                token_row.token_value,
+                _proxy_for_token(token_row),
+                token_id=token_row.id,
+                guild_id=None,
+                db=db,
+            )
             if result.get('code') in (401, 403):
-                token_manager.mark_unhealthy(db, token_row, status='invalid')
+                token_manager.mark_unhealthy(
+                    db,
+                    token_row,
+                    status='invalid',
+                    deactivate=result.get('code') == 401,
+                )
             history = ServerJoinHistory(
                 token_id=token_row.id,
                 guild_id=result.get('guild', {}).get('id') if isinstance(result.get('guild'), dict) else None,

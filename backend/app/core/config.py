@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     openrouter_max_tokens: int = Field(default=4096)
     openrouter_temperature: float = Field(default=0.7)
     openrouter_response_timeout: int = Field(default=30)
+    anysolver_api_key: str = Field(default='')
+    anysolver_base_url: str = Field(default='https://api.anysolver.com')
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')

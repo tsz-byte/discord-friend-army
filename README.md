@@ -28,13 +28,14 @@ pr-eu.proxies.fo:13337:szent9mfyq-session-ek8c0-ttl-5:jmr6tcfwso
 proxy-server.com:8080:username:password
 ```
 
-**`api_key.conf`** — OpenRouter API configuration:
+**`api_key.conf`** — OpenRouter + AnySolver API configuration:
 ```
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxx
 AI_MODEL=x-ai/grok-4.1-fast
 MAX_TOKENS=4096
 TEMPERATURE=0.7
 RESPONSE_TIMEOUT=30
+ANYSOLVER_API_KEY=your-anysolver-key
 ```
 
 ### Step 2: Install dependencies
@@ -61,7 +62,7 @@ discord-friend-army/
 ├── start.py             # Unified startup entry point
 ├── t.txt                # Discord tokens (one per line)
 ├── p.txt                # Proxy list (host:port:user:pass per line)
-├── api_key.conf         # OpenRouter API key + model configuration
+├── api_key.conf         # OpenRouter + AnySolver API configuration
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI application
@@ -74,6 +75,7 @@ discord-friend-army/
 │   │   │   ├── file_loader.py       # t.txt / p.txt / api_key.conf parser
 │   │   │   ├── token_manager.py     # Token rotation + health checks
 │   │   │   ├── discord_client.py    # Discord API client
+│   │   │   ├── captcha_solver.py    # AnySolver captcha integration
 │   │   │   ├── replication_engine.py# Conversation mirroring engine
 │   │   │   ├── pattern_analyzer.py  # Message pattern capture
 │   │   │   └── ...

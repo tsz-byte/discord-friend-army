@@ -54,3 +54,43 @@ async def test_health_check_sets_username(monkeypatch):
     checked = await manager.health_check(db, token)
     assert checked.health_status == 'healthy'
     assert checked.source_identity == 'demo-user'
+
+
+@pytest.mark.asyncio
+async def test_health_check_reactivates_token_on_success(monkeypatch):
+    db = _make_db()
+    manager = TokenManagerService()
+    token = manager.upsert_token(
+        db=db,
+        label='token-2',
+        raw_token_value='MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE',
+        rotation_priority=20,
+    )
+    token.is_active = False
+    db.commit()
+
+    class _FakeResponse:
+        status_code = 200
+        text = '{"username":"reactivated-user"}'
+
+        @staticmethod
+        def json():
+            return {'username': 'reactivated-user'}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr('app.services.token_manager.httpx.AsyncClient', _FakeAsyncClient)
+    checked = await manager.health_check(db, token)
+    assert checked.health_status == 'healthy'
+    assert checked.is_active is True

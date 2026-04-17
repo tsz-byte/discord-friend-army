@@ -295,7 +295,12 @@ async def send_message_from_token(
         proxy_url=proxy_url,
     )
     if result.get('code') in (401, 403):
-        token_manager.mark_unhealthy(db, row, status='invalid')
+        token_manager.mark_unhealthy(
+            db,
+            row,
+            status='invalid',
+            deactivate=result.get('code') == 401,
+        )
     row.usage_count = (row.usage_count or 0) + 1
     db.commit()
     log_event(
@@ -859,6 +864,8 @@ def load_api_config():
         'MAX_TOKENS': 'DFA_OPENROUTER_MAX_TOKENS',
         'TEMPERATURE': 'DFA_OPENROUTER_TEMPERATURE',
         'RESPONSE_TIMEOUT': 'DFA_OPENROUTER_RESPONSE_TIMEOUT',
+        'ANYSOLVER_API_KEY': 'DFA_ANYSOLVER_API_KEY',
+        'ANYSOLVER_BASE_URL': 'DFA_ANYSOLVER_BASE_URL',
     }
     applied: list[str] = []
     for file_key, env_key in env_map.items():
@@ -1078,9 +1085,17 @@ async def join_server_with_onboarding(
             invite_code=invite_code,
             token=token_row.token_value,
             proxy_url=proxy_url,
+            token_id=token_row.id,
+            guild_id=guild_id,
+            db=db,
         )
         if result.get('code') in (401, 403):
-            token_manager.mark_unhealthy(db, token_row, status='invalid')
+            token_manager.mark_unhealthy(
+                db,
+                token_row,
+                status='invalid',
+                deactivate=result.get('code') == 401,
+            )
         results.append({'token_id': token_row.id, 'label': token_row.label, **result})
         log_event(
             'server_join_attempted',

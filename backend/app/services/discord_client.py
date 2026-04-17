@@ -8,6 +8,7 @@ import re
 import httpx
 
 from app.core.config import get_settings
+from app.services.captcha_solver import CaptchaSolverService
 
 logger = logging.getLogger('discord_research.discord_client')
 RETRY_BASE_DELAY_SECONDS = 0.5
@@ -68,6 +69,7 @@ class DiscordClient:
         settings = get_settings()
         self.base_url = settings.discord_api_base_url.rstrip('/')
         self.token = settings.discord_bot_token
+        self.captcha_solver = CaptchaSolverService()
 
     async def get_guild(self, guild_id: str) -> dict:
         if not self.token:
@@ -179,6 +181,9 @@ class DiscordClient:
         invite_code: str,
         token: str,
         proxy_url: str | None = None,
+        token_id: int | None = None,
+        guild_id: str | None = None,
+        db=None,
     ) -> dict:
         """Join a guild via invite code with a user token.
 
@@ -198,25 +203,28 @@ class DiscordClient:
             'X-Discord-Locale': 'en-US',
             'User-Agent': _USER_AGENT,
         }
-        max_attempts = 3
+        max_attempts = 5
+        captcha_payload: dict = {}
+        captcha_attempts = 0
+        max_captcha_attempts = 2
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
                         headers=headers,
-                        json={},
+                        json=captcha_payload or {},
                     )
                     if resp.status_code in (200, 201):
                         data = resp.json()
                         guild_info = data.get('guild') or {}
-                        guild_id = guild_info.get('id') or data.get('guild_id', '')
-                        if not guild_id:
+                        joined_guild_id = guild_info.get('id') or data.get('guild_id', '')
+                        if not joined_guild_id:
                             return {'status': 'failed', 'code': 502, 'detail': 'Join succeeded but guild_id missing in Discord response'}
-                        access_check = await self.validate_guild_access(guild_id=guild_id, token=token, proxy_url=proxy_url)
-                        if guild_id:
-                            onboarding_ok = await self.complete_onboarding(guild_id, token, proxy_url)
-                            logger.info('Joined guild %s (onboarding_ok=%s access=%s)', guild_id, onboarding_ok, access_check.get('status'))
+                        access_check = await self.validate_guild_access(guild_id=joined_guild_id, token=token, proxy_url=proxy_url)
+                        if joined_guild_id:
+                            onboarding_ok = await self.complete_onboarding(joined_guild_id, token, proxy_url)
+                            logger.info('Joined guild %s (onboarding_ok=%s access=%s)', joined_guild_id, onboarding_ok, access_check.get('status'))
                         if access_check.get('status') == 'denied':
                             return {
                                 'status': 'failed',
@@ -228,6 +236,32 @@ class DiscordClient:
                         return {'status': 'joined', 'guild': guild_info}
                     if resp.status_code == 204:
                         return {'status': 'already_joined'}
+
+                    error_payload = self._response_error_payload(resp)
+                    if (
+                        self.captcha_solver.is_captcha_challenge(error_payload)
+                        and self.captcha_solver.is_enabled
+                        and captcha_attempts < max_captcha_attempts
+                    ):
+                        captcha_attempts += 1
+                        solve_result = await self.captcha_solver.solve_discord_challenge(
+                            error_payload,
+                            token_id=token_id,
+                            guild_id=guild_id,
+                            user_agent=_USER_AGENT,
+                            db=db,
+                        )
+                        if solve_result.get('status') == 'ready':
+                            captcha_payload = {'captcha_key': solve_result.get('captcha_key')}
+                            if solve_result.get('captcha_rqtoken'):
+                                captcha_payload['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
+                            continue
+                        return {
+                            'status': 'failed',
+                            'code': resp.status_code,
+                            'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown error')}",
+                        }
+
                     if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
                         retry_after_seconds = self._retry_after_seconds(resp)
                         await self._sleep_before_retry(attempt, retry_after_seconds=retry_after_seconds)
@@ -235,7 +269,7 @@ class DiscordClient:
                     return {
                         'status': 'failed',
                         'code': resp.status_code,
-                        'detail': json.dumps(self._response_error_payload(resp), ensure_ascii=False),
+                        'detail': json.dumps(error_payload, ensure_ascii=False),
                     }
                 except httpx.HTTPError as exc:
                     if attempt < max_attempts:
@@ -356,7 +390,6 @@ class DiscordClient:
                 logger.debug('get_channel_messages error channel=%s: %s', channel_id, exc)
         return []
 
-    @staticmethod
     async def validate_guild_access(self, guild_id: str, token: str, proxy_url: str | None = None) -> dict:
         """Validate that a token can access guild channels after joining."""
         headers = {'Authorization': token}
@@ -401,7 +434,7 @@ class DiscordClient:
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.patch(
-                    f'{self.base_url}/guilds/{guild_id}/members/{user_id}',
+                    f'{self.base_url}/guilds/{guild_id}/members/@me',
                     headers=headers,
                     json={'nick': nickname},
                 )
