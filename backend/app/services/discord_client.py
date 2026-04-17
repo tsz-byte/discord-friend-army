@@ -244,6 +244,13 @@ class DiscordClient:
                         and captcha_attempts < max_captcha_attempts
                     ):
                         captcha_attempts += 1
+                        logger.info(
+                            'Discord join captcha challenge detected invite=%s token_id=%s guild_id=%s attempt=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            captcha_attempts,
+                        )
                         solve_result = await self.captcha_solver.solve_discord_challenge(
                             error_payload,
                             token_id=token_id,
@@ -261,6 +268,13 @@ class DiscordClient:
                                 # alongside the solved token on retry.
                                 captcha_payload['captcha_rqdata'] = captcha_rqdata
                             continue
+                        logger.warning(
+                            'Discord join captcha solve failed invite=%s token_id=%s guild_id=%s detail=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            solve_result.get('detail'),
+                        )
                         return {
                             'status': 'failed',
                             'code': resp.status_code,

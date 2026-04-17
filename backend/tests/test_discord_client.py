@@ -38,6 +38,30 @@ class _JoinAsyncClient:
         return self._responses.pop(0)
 
 
+class _JoinNoCaptchaAsyncClient:
+    def __init__(self, *args, **kwargs):
+        self.posts = []
+        self._responses = [
+            _FakeResponse(
+                400,
+                {
+                    'message': 'Missing Access',
+                    'code': 50001,
+                },
+            ),
+        ]
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        self.posts.append((url, json))
+        return self._responses.pop(0)
+
+
 class _PatchAsyncClient:
     def __init__(self, *args, **kwargs):
         self.last_url = None
@@ -78,7 +102,12 @@ def test_join_uses_captcha_solution(monkeypatch):
             return True
 
         async def solve_discord_challenge(self, *args, **kwargs):
-            return {'status': 'ready', 'captcha_key': 'solved', 'captcha_rqtoken': 'rq'}
+            return {
+                'status': 'ready',
+                'captcha_key': 'solved',
+                'captcha_rqtoken': 'rq',
+                'captcha_rqdata': 'rq-data',
+            }
 
     client.captcha_solver = _Solver()
     monkeypatch.setattr(client, 'validate_guild_access', _ok_access)
@@ -90,6 +119,39 @@ def test_join_uses_captcha_solution(monkeypatch):
 
     assert result['status'] == 'joined'
     assert fake_client.posts[1][1]['captcha_key'] == 'solved'
+    assert fake_client.posts[1][1]['captcha_rqtoken'] == 'rq'
+    assert fake_client.posts[1][1]['captcha_rqdata'] == 'rq-data'
+
+
+def test_join_uses_captcha_solver_only_for_captcha_challenges(monkeypatch):
+    fake_client = _JoinNoCaptchaAsyncClient()
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            return fake_client
+
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', _Factory())
+    client = DiscordClient()
+
+    class _Solver:
+        is_enabled = True
+        called = False
+
+        @staticmethod
+        def is_captcha_challenge(payload):
+            return False
+
+        async def solve_discord_challenge(self, *args, **kwargs):
+            self.called = True
+            return {'status': 'ready', 'captcha_key': 'should-not-be-used'}
+
+    solver = _Solver()
+    client.captcha_solver = solver
+
+    result = __import__('asyncio').run(client.join_guild_via_invite('abc123', 'token-value'))
+
+    assert result['status'] == 'failed'
+    assert solver.called is False
 
 
 def test_patch_nickname_uses_members_me(monkeypatch):

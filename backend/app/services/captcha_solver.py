@@ -22,10 +22,11 @@ class CaptchaSolverService:
 
     Flow
     ----
-    1. POST /createTask  → receive taskId
-    2. Poll /getTaskResult with exponential back-off until status == 'ready'
-    3. Extract ``token`` (primary) from the solution and ``rqtoken`` if present
-    4. Return captcha_key / captcha_rqtoken / captcha_rqdata to the caller
+    1. Create browser session via PopularPlatformSessionAction (sessionType=discord)
+    2. Create PopularCaptcha* task with sessionId + Discord challenge fields
+    3. Poll /getTaskResult with exponential back-off until status == 'ready'
+    4. Extract ``token`` (primary) from the solution and ``rqtoken`` if present
+    5. Return captcha_key / captcha_rqtoken / captcha_rqdata to the caller
 
     Discord-specific notes
     ----------------------
@@ -147,6 +148,7 @@ class CaptchaSolverService:
         if result.get('status') == 'ready':
             if challenge_row is not None:
                 challenge_row.task_id = result.get('task_id')
+                challenge_row.anysolver_session_id = result.get('anysolver_session_id')
                 challenge_row.solver_status = 'ready'
                 challenge_row.solved_token = str(result.get('captcha_key') or '')
                 cost = result.get('cost_usd')
@@ -155,8 +157,9 @@ class CaptchaSolverService:
                 challenge_row.completed_at = datetime.now(timezone.utc)
                 db.commit()
             logger.info(
-                'AnySolver captcha solved task_id=%s attempts=%s cost=%s',
+                'AnySolver captcha solved task_id=%s session_id=%s attempts=%s cost=%s',
                 result.get('task_id'),
+                result.get('anysolver_session_id'),
                 result.get('attempts'),
                 result.get('cost_usd'),
             )
@@ -166,6 +169,7 @@ class CaptchaSolverService:
                 'captcha_rqtoken': result.get('captcha_rqtoken'),
                 'captcha_rqdata': result.get('captcha_rqdata'),
                 'task_id': result.get('task_id'),
+                'anysolver_session_id': result.get('anysolver_session_id'),
                 'cost_usd': result.get('cost_usd'),
                 'attempts': result.get('attempts'),
             }
@@ -175,6 +179,7 @@ class CaptchaSolverService:
             challenge_row,
             result.get('detail', 'AnySolver solve failed'),
             task_id=result.get('task_id'),
+            anysolver_session_id=result.get('anysolver_session_id'),
             attempts=result.get('attempts'),
         )
 
@@ -183,36 +188,103 @@ class CaptchaSolverService:
     # ------------------------------------------------------------------
 
     async def _solve(self, challenge_payload: dict, *, user_agent: str) -> dict:
-        """Low-level AnySolver createTask → getTaskResult polling loop."""
+        """Low-level AnySolver session-create + captcha-create/poll flow."""
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
-        session_id = challenge_payload.get('captcha_session_id')
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
+        session_result = await self._create_session()
+        if session_result.get('status') != 'ready':
+            if session_result.get('detail'):
+                session_result['detail'] = f"Session creation failed: {session_result.get('detail')}"
+            return session_result
+        anysolver_session_id = str(session_result.get('session_id') or '')
+        anysolver_user_agent = session_result.get('user_agent') or user_agent
+        logger.info(
+            'AnySolver session created session_id=%s user_agent=%s',
+            anysolver_session_id,
+            str(anysolver_user_agent),
+        )
 
         # Build the AnySolver PopularCaptcha* task body.
         # AnySolver's PopularCaptcha task types accept: type, websiteURL,
-        # websiteKey, rqdata (optional), sessionId (optional).
+        # websiteKey, rqdata (optional), sessionId.
         # Do NOT include userAgent, isInvisible, data, or pageTitle — those are
         # not valid fields for PopularCaptcha* task types.
         task_body: dict = {
             'type': self.task_type,
             'websiteURL': website_url,
             'websiteKey': sitekey,
+            'sessionId': anysolver_session_id,
         }
         if rqdata:
             task_body['rqdata'] = str(rqdata)
-        if session_id:
-            task_body['sessionId'] = str(session_id)
+        poll_result = await self._create_task_and_poll(task_body, purpose='captcha')
+        if poll_result.get('status') != 'ready':
+            poll_result['anysolver_session_id'] = anysolver_session_id
+            return poll_result
 
+        solution = poll_result.get('solution') or {}
+        # AnySolver returns the solved token as ``token`` for all
+        # PopularCaptcha* task types.  ``gRecaptchaResponse`` is
+        # accepted as a fallback for any future API shape changes.
+        token = solution.get('token') or solution.get('gRecaptchaResponse')
+        # rqtoken is required by Discord's challenge validation.
+        rqtoken = solution.get('rqtoken') or existing_rqtoken
+        if not token:
+            return {
+                'status': 'failed',
+                'detail': 'AnySolver ready response is missing the solution token',
+                'task_id': poll_result.get('task_id'),
+                'anysolver_session_id': anysolver_session_id,
+                'attempts': poll_result.get('attempts'),
+            }
+        return {
+            'status': 'ready',
+            'captcha_key': token,
+            'captcha_rqtoken': rqtoken,
+            'captcha_rqdata': str(rqdata) if rqdata is not None else None,
+            'task_id': poll_result.get('task_id'),
+            'anysolver_session_id': anysolver_session_id,
+            'cost_usd': poll_result.get('cost_usd'),
+            'attempts': poll_result.get('attempts'),
+        }
+
+    async def _create_session(self) -> dict:
+        """Create AnySolver Discord browser session (required before captcha tasks)."""
+        session_task = {'type': 'PopularPlatformSessionAction', 'sessionType': 'discord'}
+        result = await self._create_task_and_poll(session_task, purpose='session')
+        if result.get('status') != 'ready':
+            return result
+        solution = result.get('solution') or {}
+        session_id = solution.get('sessionId')
+        user_agent = solution.get('userAgent')
+        if not session_id:
+            return {
+                'status': 'failed',
+                'detail': 'AnySolver session response is missing solution.sessionId',
+                'task_id': result.get('task_id'),
+                'attempts': result.get('attempts'),
+            }
+        return {
+            'status': 'ready',
+            'session_id': str(session_id),
+            'user_agent': str(user_agent) if user_agent else None,
+            'task_id': result.get('task_id'),
+            'cost_usd': result.get('cost_usd'),
+            'attempts': result.get('attempts'),
+        }
+
+    async def _create_task_and_poll(self, task_body: dict, *, purpose: str) -> dict:
+        """Create AnySolver task and poll until ready/failed/timeout."""
         create_body = {'clientKey': self.api_key, 'task': task_body}
-
+        logger.info('AnySolver %s task create start type=%s', purpose, task_body.get('type'))
         async with httpx.AsyncClient(timeout=self.timeout_seconds, verify=self.verify) as client:
-            # --- Step 1: create task ---
             try:
                 create_resp = await client.post(f'{self.base_url}/createTask', json=create_body)
                 create_resp.raise_for_status()
             except httpx.HTTPError as exc:
+                logger.warning('AnySolver %s createTask HTTP error: %s', purpose, exc)
                 return {'status': 'failed', 'detail': f'AnySolver createTask request failed: {exc}'}
 
             create_data = self._safe_json(create_resp)
@@ -222,14 +294,33 @@ class CaptchaSolverService:
                     or create_data.get('errorCode')
                     or 'AnySolver createTask returned an error'
                 )
+                logger.warning('AnySolver %s createTask API error: %s payload=%s', purpose, detail, create_data)
+                return {'status': 'failed', 'detail': str(detail)}
+            create_status = create_data.get('status')
+            if create_status == 'ready':
+                logger.info('AnySolver %s task ready from createTask response', purpose)
+                return {
+                    'status': 'ready',
+                    'solution': create_data.get('solution') or {},
+                    'task_id': str(create_data.get('taskId')) if create_data.get('taskId') else None,
+                    'cost_usd': create_data.get('cost'),
+                    'attempts': 0,
+                }
+            if create_status == 'failed':
+                detail = (
+                    create_data.get('errorDescription')
+                    or create_data.get('errorCode')
+                    or 'AnySolver createTask reported failed'
+                )
+                logger.warning('AnySolver %s createTask failed: %s payload=%s', purpose, detail, create_data)
                 return {'status': 'failed', 'detail': str(detail)}
 
             task_id = create_data.get('taskId')
             if not task_id:
+                logger.warning('AnySolver %s createTask missing taskId payload=%s', purpose, create_data)
                 return {'status': 'failed', 'detail': 'AnySolver createTask returned no taskId'}
             task_id = str(task_id)
 
-            # --- Step 2: poll for result ---
             for attempt in range(1, self.poll_attempts + 1):
                 try:
                     poll_resp = await client.post(
@@ -239,6 +330,13 @@ class CaptchaSolverService:
                     poll_resp.raise_for_status()
                 except httpx.HTTPError as exc:
                     if attempt == self.poll_attempts:
+                        logger.warning(
+                            'AnySolver %s getTaskResult HTTP error task_id=%s attempt=%s: %s',
+                            purpose,
+                            task_id,
+                            attempt,
+                            exc,
+                        )
                         return {
                             'status': 'failed',
                             'detail': f'AnySolver getTaskResult request failed: {exc}',
@@ -255,6 +353,14 @@ class CaptchaSolverService:
                         or poll_data.get('errorCode')
                         or 'AnySolver task returned an error'
                     )
+                    logger.warning(
+                        'AnySolver %s task API error task_id=%s attempt=%s: %s payload=%s',
+                        purpose,
+                        task_id,
+                        attempt,
+                        detail,
+                        poll_data,
+                    )
                     return {'status': 'failed', 'detail': str(detail), 'task_id': task_id, 'attempts': attempt}
 
                 status = poll_data.get('status')
@@ -267,32 +373,31 @@ class CaptchaSolverService:
                         or poll_data.get('errorCode')
                         or 'AnySolver reported task failed'
                     )
+                    logger.warning(
+                        'AnySolver %s task failed task_id=%s attempt=%s: %s payload=%s',
+                        purpose,
+                        task_id,
+                        attempt,
+                        detail,
+                        poll_data,
+                    )
                     return {'status': 'failed', 'detail': str(detail), 'task_id': task_id, 'attempts': attempt}
                 if status == 'ready':
-                    solution = poll_data.get('solution') or {}
-                    # AnySolver returns the solved token as ``token`` for all
-                    # PopularCaptcha* task types.  ``gRecaptchaResponse`` is
-                    # accepted as a fallback for any future API shape changes.
-                    token = solution.get('token') or solution.get('gRecaptchaResponse')
-                    # rqtoken is required by Discord's challenge validation.
-                    rqtoken = solution.get('rqtoken') or existing_rqtoken
-                    if not token:
-                        return {
-                            'status': 'failed',
-                            'detail': 'AnySolver ready response is missing the solution token',
-                            'task_id': task_id,
-                            'attempts': attempt,
-                        }
                     return {
                         'status': 'ready',
-                        'captcha_key': token,
-                        'captcha_rqtoken': rqtoken,
-                        'captcha_rqdata': str(rqdata) if rqdata is not None else None,
+                        'solution': poll_data.get('solution') or {},
                         'task_id': task_id,
                         'cost_usd': poll_data.get('cost'),
                         'attempts': attempt,
                     }
-                # Unexpected status — do not spin forever.
+                logger.warning(
+                    'AnySolver %s task unexpected status task_id=%s attempt=%s status=%r payload=%s',
+                    purpose,
+                    task_id,
+                    attempt,
+                    status,
+                    poll_data,
+                )
                 return {
                     'status': 'failed',
                     'detail': f'AnySolver returned unexpected status: {status!r}',
@@ -300,6 +405,12 @@ class CaptchaSolverService:
                     'attempts': attempt,
                 }
 
+            logger.warning(
+                'AnySolver %s task polling timed out task_id=%s attempts=%s',
+                purpose,
+                task_id,
+                self.poll_attempts,
+            )
             return {
                 'status': 'failed',
                 'detail': 'AnySolver task polling timed out',
@@ -349,6 +460,7 @@ class CaptchaSolverService:
         detail: str,
         *,
         task_id: str | None = None,
+        anysolver_session_id: str | None = None,
         attempts: int | None = None,
     ) -> dict:
         if challenge_row is not None and db is not None:
@@ -356,9 +468,17 @@ class CaptchaSolverService:
             challenge_row.error = detail[:MAX_ERROR_LENGTH]
             if task_id is not None:
                 challenge_row.task_id = task_id
+            if anysolver_session_id is not None:
+                challenge_row.anysolver_session_id = anysolver_session_id
             if attempts is not None:
                 challenge_row.attempts = attempts
             challenge_row.completed_at = datetime.now(timezone.utc)
             db.commit()
-        logger.warning('AnySolver captcha solve failed: %s', detail)
+        logger.warning(
+            'AnySolver captcha solve failed task_id=%s session_id=%s attempts=%s detail=%s',
+            task_id,
+            anysolver_session_id,
+            attempts,
+            detail,
+        )
         return {'status': 'failed', 'detail': detail}

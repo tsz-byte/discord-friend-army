@@ -47,8 +47,21 @@ class _FakeAsyncClient:
     async def post(self, url, json=None, data=None, params=None):
         self.posts.append({'url': url, 'json': json})
         if 'createTask' in url:
-            return _FakeResponse({'errorId': 0, 'taskId': 'task-123'})
+            task_type = (json or {}).get('task', {}).get('type')
+            if task_type == 'PopularPlatformSessionAction':
+                return _FakeResponse({'errorId': 0, 'taskId': 'session-task-123'})
+            return _FakeResponse({'errorId': 0, 'taskId': 'captcha-task-123'})
         if 'getTaskResult' in url:
+            task_id = (json or {}).get('taskId')
+            if task_id == 'session-task-123':
+                return _FakeResponse({
+                    'errorId': 0,
+                    'status': 'ready',
+                    'solution': {
+                        'sessionId': 'anysolver-session-123',
+                        'userAgent': 'anysolver-user-agent',
+                    },
+                })
             return _FakeResponse({
                 'errorId': 0,
                 'status': 'ready',
@@ -68,8 +81,18 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
     async def post(self, url, json=None, data=None, params=None):
         self.posts.append({'url': url, 'json': json})
         if 'createTask' in url:
-            return _FakeResponse({'errorId': 0, 'taskId': 'task-456'})
+            task_type = (json or {}).get('task', {}).get('type')
+            if task_type == 'PopularPlatformSessionAction':
+                return _FakeResponse({'errorId': 0, 'taskId': 'session-task-456'})
+            return _FakeResponse({'errorId': 0, 'taskId': 'captcha-task-456'})
         if 'getTaskResult' in url:
+            task_id = (json or {}).get('taskId')
+            if task_id == 'session-task-456':
+                return _FakeResponse({
+                    'errorId': 0,
+                    'status': 'ready',
+                    'solution': {'sessionId': 'anysolver-session-456', 'userAgent': 'ua-from-session'},
+                })
             self._get_task_result_calls += 1
             if self._get_task_result_calls == 1:
                 return _FakeResponse({'errorId': 0, 'status': 'processing'})
@@ -79,6 +102,32 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
                 'cost': '0.003',
                 'solution': {'token': 'late-token', 'rqtoken': 'late-rqtoken'},
             })
+        return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
+
+
+class _CreateTaskReadyClient(_FakeAsyncClient):
+    """Returns ready solution directly from createTask responses."""
+
+    async def post(self, url, json=None, data=None, params=None):
+        self.posts.append({'url': url, 'json': json})
+        if 'createTask' in url:
+            task_type = (json or {}).get('task', {}).get('type')
+            if task_type == 'PopularPlatformSessionAction':
+                return _FakeResponse({
+                    'errorId': 0,
+                    'status': 'ready',
+                    'taskId': 'session-task-ready',
+                    'solution': {'sessionId': 'session-ready', 'userAgent': 'ua-ready'},
+                })
+            return _FakeResponse({
+                'errorId': 0,
+                'status': 'ready',
+                'taskId': 'captcha-task-ready',
+                'cost': '0.004',
+                'solution': {'token': 'token-ready', 'rqtoken': 'rq-ready'},
+            })
+        if 'getTaskResult' in url:
+            raise AssertionError('getTaskResult should not be called for createTask-ready responses')
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
 
 
@@ -152,6 +201,7 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
             {
                 'captcha_sitekey': 'site-key',
                 'captcha_rqdata': 'rq-data',
+                'captcha_session_id': 'discord-session-id',
                 'captcha_service': 'hcaptcha',
             },
             token_id=11,
@@ -167,19 +217,27 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
     assert result['captcha_rqtoken'] == 'rq-token'
     assert result['captcha_rqdata'] == 'rq-data'
     assert row is not None
-    assert row.task_id == 'task-123'
+    assert row.task_id == 'captcha-task-123'
+    assert row.anysolver_session_id == 'anysolver-session-123'
     assert row.solver_status == 'ready'
 
-    # Verify correct task body was sent to AnySolver.
-    create_call = fake_client.posts[0]
-    assert create_call['json']['task']['type'] == 'PopularCaptchaEnterpriseInvisibleTokenProxyLess'
-    assert create_call['json']['task']['rqdata'] == 'rq-data'
+    # Verify AnySolver two-step flow and correct task body.
+    assert fake_client.posts[0]['json']['task']['type'] == 'PopularPlatformSessionAction'
+    create_call = fake_client.posts[2]
+    task_json = create_call['json']['task']
+    assert task_json['type'] == 'PopularCaptchaEnterpriseInvisibleTokenProxyLess'
+    assert task_json['rqdata'] == 'rq-data'
+    assert task_json['sessionId'] == 'anysolver-session-123'
+    # Ensure Discord captcha_session_id is NOT used as AnySolver sessionId.
+    assert task_json['sessionId'] != 'discord-session-id'
     # data field must NOT be present (not valid for PopularCaptcha* task types)
-    assert 'data' not in create_call['json']['task']
+    assert 'data' not in task_json
     # userAgent must NOT be present (not valid for PopularCaptcha* task types)
-    assert 'userAgent' not in create_call['json']['task']
-    assert create_call['json']['task']['websiteURL'] == 'https://discord.com'
-    assert create_call['json']['task']['websiteKey'] == 'site-key'
+    assert 'userAgent' not in task_json
+    assert 'isInvisible' not in task_json
+    assert 'pageTitle' not in task_json
+    assert task_json['websiteURL'] == 'https://discord.com'
+    assert task_json['websiteKey'] == 'site-key'
 
     get_settings.cache_clear()
 
@@ -210,6 +268,7 @@ def test_solver_persists_processing_then_ready(monkeypatch):
     assert result['captcha_rqtoken'] == 'late-rqtoken'
     row = db.query(CaptchaChallenge).order_by(CaptchaChallenge.id.desc()).first()
     assert row.solver_status == 'ready'
+    assert row.anysolver_session_id == 'anysolver-session-456'
     assert row.attempts == 2
 
     get_settings.cache_clear()
@@ -242,12 +301,42 @@ def test_solver_no_rqdata(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'solved-token'
     assert result['captcha_rqdata'] is None
+    assert result['anysolver_session_id'] == 'anysolver-session-123'
 
     # Verify rqdata/data keys are absent from the task body.
-    assert captured, 'Expected at least one httpx.AsyncClient to be created'
-    create_body = captured[0].posts[0]['json']
-    assert 'rqdata' not in create_body['task']
-    assert 'data' not in create_body['task']
+    assert captured, 'Expected at least one httpx.AsyncClient to be created.'
+    all_posts = [post for client in captured for post in client.posts]
+    create_calls = [post for post in all_posts if 'createTask' in post['url']]
+    assert create_calls[0]['json']['task']['type'] == 'PopularPlatformSessionAction'
+    captcha_create_body = create_calls[1]['json']
+    assert captcha_create_body['task']['sessionId'] == 'anysolver-session-123'
+    assert 'rqdata' not in captcha_create_body['task']
+    assert 'data' not in captcha_create_body['task']
+
+    get_settings.cache_clear()
+
+
+def test_solver_handles_create_task_ready_responses(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            return _CreateTaskReadyClient(*args, **kwargs)
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key', 'captcha_rqdata': 'rq-data'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'ready'
+    assert result['captcha_key'] == 'token-ready'
+    assert result['captcha_rqtoken'] == 'rq-ready'
+    assert result['anysolver_session_id'] == 'session-ready'
 
     get_settings.cache_clear()
 
@@ -404,5 +493,6 @@ def test_solve_writes_failed_row_to_db(monkeypatch):
     assert 'quota exceeded' in (row.error or '')
     assert row.token_id == 7
     assert row.guild_id == 'guild1'
+    assert row.anysolver_session_id is None
 
     get_settings.cache_clear()

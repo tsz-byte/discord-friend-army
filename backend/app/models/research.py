@@ -212,6 +212,7 @@ class CaptchaChallenge(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(String(128), nullable=True, index=True)
+    anysolver_session_id = Column(String(128), nullable=True, index=True)
     token_id = Column(Integer, nullable=True, index=True)
     guild_id = Column(String(32), nullable=True, index=True)
     challenge_type = Column(String(64), nullable=False, default='hcaptcha')
