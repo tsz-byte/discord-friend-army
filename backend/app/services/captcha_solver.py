@@ -242,10 +242,10 @@ class DeathByCaptchaService(BaseCaptchaService):
                     raw_text = str(poll_data.get('raw_text') or '')
                     if ',' in raw_text:
                         token_candidate = raw_text.rsplit(',', 1)[-1]
-                        if token_candidate and token_candidate not in ('0', 'CAPCHA_NOT_READY', 'NOT_READY'):
+                        if token_candidate and token_candidate not in ('0', 'CAPTCHA_NOT_READY', 'NOT_READY'):
                             token = token_candidate
                 is_correct = poll_data.get('is_correct')
-                if token and str(token) not in ('0', 'CAPCHA_NOT_READY', 'NOT_READY') and is_correct not in (False, 0, '0'):
+                if token and str(token) not in ('0', 'CAPTCHA_NOT_READY', 'NOT_READY') and is_correct not in (False, 0, '0'):
                     return {
                         'status': 'ready',
                         'captcha_key': str(token),
@@ -457,7 +457,7 @@ class CaptchaSolverService:
 
         health_sorted = sorted(
             self._service_names,
-            key=lambda name: int(self._health[name]['failures']),
+            key=self._failure_count,
         )
         start_service = self._service_names[self._next_start_index % len(self._service_names)]
         if start_service in health_sorted:
@@ -487,6 +487,10 @@ class CaptchaSolverService:
         if len(self._service_names) <= 1:
             return None
         return self._service_names[(idx + 1) % len(self._service_names)]
+
+    def _failure_count(self, service_name: str) -> int:
+        failures = self._health.get(service_name, {}).get('failures', 0)
+        return int(failures) if isinstance(failures, (int, str)) and str(failures).isdigit() else 0
 
     async def _mark_failed(
         self,
