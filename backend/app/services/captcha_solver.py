@@ -294,6 +294,24 @@ class CaptchaSolverService:
                 )
                 logger.warning('AnySolver %s createTask API error: %s payload=%s', purpose, detail, create_data)
                 return {'status': 'failed', 'detail': str(detail)}
+            create_status = create_data.get('status')
+            if create_status == 'ready':
+                logger.info('AnySolver %s task ready from createTask response', purpose)
+                return {
+                    'status': 'ready',
+                    'solution': create_data.get('solution') or {},
+                    'task_id': str(create_data.get('taskId')) if create_data.get('taskId') else None,
+                    'cost_usd': create_data.get('cost'),
+                    'attempts': 0,
+                }
+            if create_status == 'failed':
+                detail = (
+                    create_data.get('errorDescription')
+                    or create_data.get('errorCode')
+                    or 'AnySolver createTask reported failed'
+                )
+                logger.warning('AnySolver %s createTask failed: %s payload=%s', purpose, detail, create_data)
+                return {'status': 'failed', 'detail': str(detail)}
 
             task_id = create_data.get('taskId')
             if not task_id:

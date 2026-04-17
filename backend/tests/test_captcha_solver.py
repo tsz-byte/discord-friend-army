@@ -105,6 +105,32 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
 
 
+class _CreateTaskReadyClient(_FakeAsyncClient):
+    """Returns ready solution directly from createTask responses."""
+
+    async def post(self, url, json=None, data=None, params=None):
+        self.posts.append({'url': url, 'json': json})
+        if 'createTask' in url:
+            task_type = (json or {}).get('task', {}).get('type')
+            if task_type == 'PopularPlatformSessionAction':
+                return _FakeResponse({
+                    'errorId': 0,
+                    'status': 'ready',
+                    'taskId': 'session-task-ready',
+                    'solution': {'sessionId': 'session-ready', 'userAgent': 'ua-ready'},
+                })
+            return _FakeResponse({
+                'errorId': 0,
+                'status': 'ready',
+                'taskId': 'captcha-task-ready',
+                'cost': '0.004',
+                'solution': {'token': 'token-ready', 'rqtoken': 'rq-ready'},
+            })
+        if 'getTaskResult' in url:
+            raise AssertionError('getTaskResult should not be called for createTask-ready responses')
+        return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
+
+
 def _make_db():
     engine = create_engine('sqlite:///:memory:', future=True)
     Base.metadata.create_all(bind=engine)
@@ -285,6 +311,31 @@ def test_solver_no_rqdata(monkeypatch):
     assert captcha_create_body['task']['sessionId'] == 'anysolver-session-123'
     assert 'rqdata' not in captcha_create_body['task']
     assert 'data' not in captcha_create_body['task']
+
+    get_settings.cache_clear()
+
+
+def test_solver_handles_create_task_ready_responses(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            return _CreateTaskReadyClient(*args, **kwargs)
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key', 'captcha_rqdata': 'rq-data'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'ready'
+    assert result['captcha_key'] == 'token-ready'
+    assert result['captcha_rqtoken'] == 'rq-ready'
+    assert result['anysolver_session_id'] == 'session-ready'
 
     get_settings.cache_clear()
 
