@@ -328,7 +328,7 @@ function App() {
   const addChannelMapping = async () => {
     setError('')
     try {
-      const response = await fetch(`${API_BASE}/replication/channel-mappings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, source_channel_id: sourceChannelId, target_guild_id: targetGuildId, target_channel_id: targetChannelId, enabled: true, settings: {}, filters: {} }) })
+      const response = await fetch(`${API_BASE}/replication/channel-mappings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, source_channel_id: sourceChannelId, target_guild_id: targetGuildId, target_channel_id: targetChannelId, enabled: true, settings: { realtime_enabled: true }, filters: {} }) })
       if (!response.ok) throw new Error('Failed to save channel mapping')
       await loadReplicationData()
       flash('Channel mapping saved')
@@ -1077,7 +1077,7 @@ function App() {
               </div>
               <p style={{ color: '#9ca3af', fontSize: 13, marginBottom: 12 }}>
                 Monitors source channel(s) continuously and forwards every new message to the target channel using round-robin token rotation.
-                Enable &ldquo;RT&rdquo; on channel mappings in the Servers tab to activate per-mapping real-time transfer.
+                All channel mappings are real-time enabled by default. Auto-starts on server launch when mappings exist.
               </p>
               <div className="stat-cards mini" style={{ marginBottom: 12 }}>
                 <div className="stat-card-mini green-bg"><strong>{realtimeStatus?.stats?.transferred ?? 0}</strong><span>Transferred</span></div>

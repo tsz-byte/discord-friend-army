@@ -433,6 +433,8 @@ def save_channel_mapping(request: ChannelMappingRequest, db: Session = Depends(g
         .first()
     )
     if row is None:
+        # Merge caller settings with defaults, ensuring realtime transfer is on by default.
+        merged_settings = {'realtime_enabled': True, **(request.settings or {})}
         row = ChannelMapping(
             source_guild_id=request.source_guild_id,
             source_channel_id=request.source_channel_id,
@@ -440,13 +442,19 @@ def save_channel_mapping(request: ChannelMappingRequest, db: Session = Depends(g
             target_channel_id=request.target_channel_id,
             enabled=request.enabled,
             filters=request.filters,
-            settings=request.settings,
+            settings=merged_settings,
         )
         db.add(row)
     else:
         row.enabled = request.enabled
         row.filters = request.filters
-        row.settings = request.settings
+        # Preserve existing settings but ensure realtime_enabled stays True unless
+        # the caller explicitly passes False.
+        existing = dict(row.settings or {})
+        incoming = dict(request.settings or {})
+        if 'realtime_enabled' not in incoming:
+            incoming['realtime_enabled'] = existing.get('realtime_enabled', True)
+        row.settings = {**existing, **incoming}
     db.commit()
     db.refresh(row)
     log_event(
@@ -1250,6 +1258,13 @@ async def realtime_start(
         raise HTTPException(status_code=400, detail='discord_bot_token is required when runtype=BOTT')
 
     result = realtime_listener.start_listener(interval_ms=request.interval_ms)
+    # Persist interval so server restarts pick it up automatically.
+    rt_row = db.query(AppSetting).filter(AppSetting.key == 'realtime_interval_ms').first()
+    if rt_row is None:
+        db.add(AppSetting(key='realtime_interval_ms', value=str(request.interval_ms)))
+    else:
+        rt_row.value = str(request.interval_ms)
+    db.commit()
     log_event('realtime_listener_started', {'interval_ms': request.interval_ms, 'runtype': runtype})
     return RealtimeStatusResponse(**result)
 

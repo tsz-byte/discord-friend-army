@@ -163,7 +163,8 @@ async def _listener_loop() -> None:
 
             for mapping in mappings:
                 settings = mapping.settings or {}
-                if not settings.get('realtime_enabled', False):
+                # Default to real-time enabled so all enabled mappings transfer automatically.
+                if not settings.get('realtime_enabled', True):
                     continue
                 now_ts = datetime.now(timezone.utc).timestamp()
                 if mapping_breaker_until.get(mapping.id, 0) > now_ts:
