@@ -173,6 +173,7 @@ async def _listener_loop() -> None:
                 src_proxy: str | None = None
                 source_token_row = None
                 source_token_value: str | None = None
+                bot_token = ''
 
                 if runtype == 'USERT':
                     source_tokens = (
@@ -202,6 +203,7 @@ async def _listener_loop() -> None:
                     if not bot_token:
                         logger.warning('realtime_listener: runtype=BOTT but no bot token configured')
                         continue
+                    source_token_value = bot_token
 
                 after_id = last_seen.get(mapping.id)
                 messages = await discord_client.get_channel_messages(
@@ -255,7 +257,7 @@ async def _listener_loop() -> None:
                                 username=author_name,
                                 avatar_url=_author_avatar_url(author),
                                 timestamp_iso=message.get('timestamp'),
-                                bot_token=_read_bot_token(db),
+                                bot_token=bot_token,
                             )
                         else:
                             # Pick next token (round-robin) for the send

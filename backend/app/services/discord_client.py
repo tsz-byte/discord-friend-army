@@ -463,6 +463,8 @@ class DiscordClient:
         """
         auth_token = (token or '').strip()
         if auth_token:
+            if self.runtype == 'BOTT' and not auth_token.lower().startswith('bot '):
+                auth_token = f'Bot {auth_token}'
             headers = {'Authorization': auth_token}
         elif self.token:
             headers = {'Authorization': f'Bot {self.token}'}

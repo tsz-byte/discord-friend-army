@@ -237,7 +237,9 @@ def test_send_webhook_message_sets_username_avatar_and_timestamp(monkeypatch):
         )
     )
     assert result['status'] == 'sent'
-    send_call = [c for c in fake_client.calls if c[0] == 'POST' and '/webhooks/11/hook-token?wait=true' in c[1]][0]
+    send_calls = [c for c in fake_client.calls if c[0] == 'POST' and '/webhooks/11/hook-token?wait=true' in c[1]]
+    assert send_calls, 'Expected webhook send call not found'
+    send_call = send_calls[0]
     payload = send_call[2]
     assert payload['username'] == 'alice'
     assert payload['avatar_url'] == 'https://cdn.example/avatar.png'

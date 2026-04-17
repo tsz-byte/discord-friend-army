@@ -136,7 +136,7 @@ def load_api_config() -> None:
 
 
 def _runtime_mode() -> str:
-    value = os.environ.get('DFA_RUNTYPE', 'USERT').strip().upper() or 'USERT'
+    value = (os.environ.get('DFA_RUNTYPE', 'USERT') or 'USERT').strip().upper()
     if value not in {'USERT', 'BOTT'}:
         raise ValueError('RUNTYPE in api_key.conf must be USERT or BOTT')
     return value
