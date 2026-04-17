@@ -182,6 +182,11 @@ class DeathByCaptchaService(BaseCaptchaService):
                 'detail': 'deathbycaptcha requires DFA_DEATHBYCAPTCHA_API_KEY in username:password format',
             }
         username, password = self.api_key.split(':', 1)
+        if not username or not password:
+            return {
+                'status': 'failed',
+                'detail': 'deathbycaptcha requires non-empty username and password',
+            }
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
@@ -211,8 +216,9 @@ class DeathByCaptchaService(BaseCaptchaService):
             captcha_id = create_payload.get('captcha') or create_payload.get('id')
             if not captcha_id:
                 raw_text = str(create_payload.get('raw_text') or '')
-                if raw_text and raw_text.split(',', 1)[0].isdigit():
-                    captcha_id = raw_text.split(',', 1)[0]
+                first_segment = raw_text.split(',', 1)[0] if raw_text else ''
+                if first_segment.isdigit():
+                    captcha_id = first_segment
             if not captcha_id:
                 return {'status': 'failed', 'detail': 'deathbycaptcha create returned no captcha id'}
             captcha_id = str(captcha_id)
@@ -275,6 +281,8 @@ class CaptchaSolverService:
     def is_captcha_challenge(payload: dict | None) -> bool:
         if not isinstance(payload, dict):
             return False
+        # Discord occasionally omits rqdata for some challenge variants, so
+        # sitekey-only challenges are still considered solvable.
         return bool(payload.get('captcha_sitekey'))
 
     async def solve_discord_challenge(
@@ -379,6 +387,8 @@ class CaptchaSolverService:
 
     def _build_verify_value(self, settings) -> bool | str:
         if not settings.captcha_ssl_verify:
+            if str(settings.app_env).lower() in ('prod', 'production'):
+                logger.error('Captcha SSL certificate verification is disabled in production mode. Re-enable DFA_CAPTCHA_SSL_VERIFY as soon as possible.')
             logger.warning('Captcha SSL certificate verification is disabled. This is insecure and should only be used for troubleshooting.')
             return False
         if settings.captcha_ca_bundle_path:
@@ -447,7 +457,7 @@ class CaptchaSolverService:
 
         health_sorted = sorted(
             self._service_names,
-            key=lambda name: int((self._health.get(name) or {}).get('failures', 0)),
+            key=lambda name: int(self._health[name]['failures']),
         )
         start_service = self._service_names[self._next_start_index % len(self._service_names)]
         if start_service in health_sorted:
