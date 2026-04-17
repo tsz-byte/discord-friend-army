@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import random
+import re
 
 import httpx
 
@@ -185,10 +186,9 @@ class DiscordClient:
         onboarding so the account is immediately able to send messages even if
         the server uses Discord's onboarding gate.
         """
-        # Strip full URL down to just the code if needed.
-        code = invite_code.strip().rstrip('/')
-        if '/' in code:
-            code = code.rsplit('/', 1)[-1]
+        code = self.extract_invite_code(invite_code)
+        if not code:
+            return {'status': 'failed', 'code': 400, 'detail': 'Invalid invite code format'}
 
         headers = {
             'Authorization': token,
@@ -211,14 +211,26 @@ class DiscordClient:
                         data = resp.json()
                         guild_info = data.get('guild') or {}
                         guild_id = guild_info.get('id') or data.get('guild_id', '')
+                        if not guild_id:
+                            return {'status': 'failed', 'code': 502, 'detail': 'Join succeeded but guild_id missing in Discord response'}
+                        access_check = await self.validate_guild_access(guild_id=guild_id, token=token, proxy_url=proxy_url)
                         if guild_id:
                             onboarding_ok = await self.complete_onboarding(guild_id, token, proxy_url)
-                            logger.info('Joined guild %s (onboarding_ok=%s)', guild_id, onboarding_ok)
+                            logger.info('Joined guild %s (onboarding_ok=%s access=%s)', guild_id, onboarding_ok, access_check.get('status'))
+                        if access_check.get('status') == 'denied':
+                            return {
+                                'status': 'failed',
+                                'code': 403,
+                                'error_code': 50001,
+                                'detail': access_check.get('detail', 'Missing access to server channels'),
+                                'guild': guild_info,
+                            }
                         return {'status': 'joined', 'guild': guild_info}
                     if resp.status_code == 204:
                         return {'status': 'already_joined'}
                     if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
-                        await self._sleep_before_retry(attempt)
+                        retry_after = self._retry_after_seconds(resp)
+                        await self._sleep_before_retry(attempt, retry_after=retry_after)
                         continue
                     return {
                         'status': 'failed',
@@ -241,17 +253,36 @@ class DiscordClient:
         """Send a message to a Discord channel using a user token."""
         headers = {'Authorization': token, 'Content-Type': 'application/json'}
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
-            try:
-                resp = await client.post(
-                    f'{self.base_url}/channels/{channel_id}/messages',
-                    headers=headers,
-                    json={'content': content},
-                )
-                if resp.status_code in (200, 201):
-                    return {'status': 'sent', 'message': resp.json()}
-                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
-            except httpx.HTTPError as exc:
-                return {'status': 'error', 'detail': str(exc)}
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = await client.post(
+                        f'{self.base_url}/channels/{channel_id}/messages',
+                        headers=headers,
+                        json={'content': content},
+                    )
+                    if resp.status_code in (200, 201):
+                        return {'status': 'sent', 'message': resp.json()}
+                    if resp.status_code in (401, 403):
+                        payload = self._response_error_payload(resp)
+                        return {
+                            'status': 'failed',
+                            'code': resp.status_code,
+                            'error_code': payload.get('code'),
+                            'detail': payload.get('message', resp.text[:200]),
+                        }
+                    if resp.status_code == 429 and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt, retry_after=self._retry_after_seconds(resp))
+                        continue
+                    if resp.status_code >= 500 and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+                except httpx.HTTPError as exc:
+                    if attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {'status': 'error', 'detail': str(exc)}
 
     async def get_guild_members(
         self,
@@ -326,7 +357,87 @@ class DiscordClient:
         return []
 
     @staticmethod
-    async def _sleep_before_retry(attempt: int) -> None:
+    async def validate_guild_access(self, guild_id: str, token: str, proxy_url: str | None = None) -> dict:
+        """Validate that a token can access guild channels after joining."""
+        headers = {'Authorization': token}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(f'{self.base_url}/guilds/{guild_id}/channels', headers=headers)
+                if resp.status_code == 200:
+                    return {'status': 'ok'}
+                if resp.status_code in (401, 403):
+                    payload = self._response_error_payload(resp)
+                    return {
+                        'status': 'denied',
+                        'code': resp.status_code,
+                        'error_code': payload.get('code'),
+                        'detail': payload.get('message', 'Access denied'),
+                    }
+                return {'status': 'unknown', 'code': resp.status_code}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def patch_user_clan_tag(self, token: str, clan_tag: str | None, proxy_url: str | None = None) -> dict:
+        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        payload = {'clan': clan_tag}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.patch(f'{self.base_url}/users/@me', headers=headers, json=payload)
+                if resp.status_code in (200, 201):
+                    return {'status': 'updated', 'user': resp.json()}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def patch_member_nickname(
+        self,
+        guild_id: str,
+        user_id: str,
+        nickname: str | None,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> dict:
+        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.patch(
+                    f'{self.base_url}/guilds/{guild_id}/members/{user_id}',
+                    headers=headers,
+                    json={'nick': nickname},
+                )
+                if resp.status_code in (200, 204):
+                    return {'status': 'updated'}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def trigger_typing(self, channel_id: str, token: str, proxy_url: str | None = None) -> dict:
+        headers = {'Authorization': token}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.post(f'{self.base_url}/channels/{channel_id}/typing', headers=headers)
+                if resp.status_code in (200, 204):
+                    return {'status': 'ok'}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    @staticmethod
+    def extract_invite_code(invite: str) -> str:
+        value = invite.strip()
+        if not value:
+            return ''
+        value = value.rstrip('/')
+        if '://' in value or '/' in value:
+            value = value.rsplit('/', 1)[-1]
+        value = value.split('?', 1)[0]
+        return value if re.fullmatch(r'[a-zA-Z0-9-]{2,100}', value) else ''
+
+    @staticmethod
+    async def _sleep_before_retry(attempt: int, retry_after: float | None = None) -> None:
+        if retry_after is not None and retry_after > 0:
+            await asyncio.sleep(min(10.0, retry_after + random.uniform(0.0, RETRY_JITTER_SECONDS)))
+            return
         await asyncio.sleep(min(RETRY_MAX_SLEEP_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))) + random.uniform(0.0, RETRY_JITTER_SECONDS))
 
     @staticmethod
@@ -338,3 +449,17 @@ class DiscordClient:
         except ValueError:
             pass
         return {'message': response.text[:200]}
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float | None:
+        retry_after = response.headers.get('Retry-After')
+        if retry_after:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+        payload = DiscordClient._response_error_payload(response)
+        value = payload.get('retry_after')
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None

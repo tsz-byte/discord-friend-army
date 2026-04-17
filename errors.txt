@@ -16,3 +16,7 @@
 {"timestamp": "2026-04-15T22:54:15.995474+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception terminating connection <sqlite3.Connection object at 0x7f6d8da427a0>"}
 {"timestamp": "2026-04-15T22:54:15.995928+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception during reset or similar"}
 {"timestamp": "2026-04-15T22:54:15.996194+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception terminating connection <sqlite3.Connection object at 0x7f6d8da84f40>"}
+{"timestamp": "2026-04-17T18:01:48.711035+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception during reset or similar"}
+{"timestamp": "2026-04-17T18:01:48.712113+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception terminating connection <sqlite3.Connection object at 0x7fe1acaa3790>"}
+{"timestamp": "2026-04-17T18:01:48.712598+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception during reset or similar"}
+{"timestamp": "2026-04-17T18:01:48.712890+00:00", "level": "ERROR", "name": "sqlalchemy.pool.impl.SingletonThreadPool", "message": "Exception terminating connection <sqlite3.Connection object at 0x7fe1acb9a2f0>"}

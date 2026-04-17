@@ -40,6 +40,8 @@ _stats: dict = {
 # Timing constants for send rate-limiting (seconds)
 _SEND_DELAY_MIN = 0.6
 _SEND_DELAY_JITTER = 0.4
+_BREAKER_THRESHOLD = 3
+_BREAKER_OPEN_SECONDS = 30
 
 
 def get_status() -> dict:
@@ -111,6 +113,8 @@ async def _listener_loop() -> None:
     token_manager = TokenManagerService()
     # Track last-seen message ID per mapping (keyed by mapping.id)
     last_seen: dict[int, str | None] = {}
+    mapping_failures: dict[int, int] = {}
+    mapping_breaker_until: dict[int, float] = {}
 
     while _active:
         db = SessionLocal()
@@ -124,6 +128,9 @@ async def _listener_loop() -> None:
             for mapping in mappings:
                 settings = mapping.settings or {}
                 if not settings.get('realtime_enabled', False):
+                    continue
+                now_ts = datetime.now(timezone.utc).timestamp()
+                if mapping_breaker_until.get(mapping.id, 0) > now_ts:
                     continue
 
                 # Pick a source token to read the source channel
@@ -159,6 +166,10 @@ async def _listener_loop() -> None:
                     limit=10,
                     proxy_url=src_proxy,
                 )
+                if source_token_row.health_status == 'unknown':
+                    await token_manager.health_check(db, source_token_row)
+                if source_token_row.health_status not in {'healthy', 'unknown'}:
+                    continue
                 if not messages:
                     continue
 
@@ -212,6 +223,7 @@ async def _listener_loop() -> None:
                         )
                         if result.get('status') == 'sent':
                             event.status = 'sent'
+                            mapping_failures[mapping.id] = 0
                             _stats['transferred'] = _stats.get('transferred', 0) + 1
                             _stats['last_transfer'] = datetime.now(timezone.utc).isoformat()
                             log_event(
@@ -227,6 +239,12 @@ async def _listener_loop() -> None:
                             event.status = 'failed'
                             event.error = f"{result.get('status')}: {result.get('detail', '')}"
                             _stats['failed'] = _stats.get('failed', 0) + 1
+                            if result.get('code') in (401, 403):
+                                send_token_row.health_status = 'invalid'
+                                send_token_row.is_active = False
+                            mapping_failures[mapping.id] = mapping_failures.get(mapping.id, 0) + 1
+                            if mapping_failures[mapping.id] >= _BREAKER_THRESHOLD:
+                                mapping_breaker_until[mapping.id] = datetime.now(timezone.utc).timestamp() + _BREAKER_OPEN_SECONDS
                             logger.warning(
                                 'realtime_listener: send failed ch=%s token=%s: %s',
                                 mapping.target_channel_id,
@@ -237,6 +255,9 @@ async def _listener_loop() -> None:
                         event.status = 'failed'
                         event.error = str(exc)
                         _stats['failed'] = _stats.get('failed', 0) + 1
+                        mapping_failures[mapping.id] = mapping_failures.get(mapping.id, 0) + 1
+                        if mapping_failures[mapping.id] >= _BREAKER_THRESHOLD:
+                            mapping_breaker_until[mapping.id] = datetime.now(timezone.utc).timestamp() + _BREAKER_OPEN_SECONDS
                         logger.error('realtime_listener: exception sending: %s', exc, exc_info=True)
 
                     db.commit()

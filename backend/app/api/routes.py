@@ -8,6 +8,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.api.routes_tools import router as tools_router
 from app.models.research import GuildOptIn, MessageResearchEvent, UserPrivacyPreference
 from app.schemas.research import (
     AccountTokenCreateRequest,
@@ -293,6 +294,8 @@ async def send_message_from_token(
         token=row.token_value,
         proxy_url=proxy_url,
     )
+    if result.get('code') in (401, 403):
+        token_manager.mark_unhealthy(db, row, status='invalid')
     row.usage_count = (row.usage_count or 0) + 1
     db.commit()
     log_event(
@@ -1076,6 +1079,8 @@ async def join_server_with_onboarding(
             token=token_row.token_value,
             proxy_url=proxy_url,
         )
+        if result.get('code') in (401, 403):
+            token_manager.mark_unhealthy(db, token_row, status='invalid')
         results.append({'token_id': token_row.id, 'label': token_row.label, **result})
         log_event(
             'server_join_attempted',
@@ -1138,9 +1143,13 @@ def toggle_mapping_realtime(
 @router.post('/realtime/start', response_model=RealtimeStatusResponse)
 async def realtime_start(
     request: RealtimeStartRequest = Body(default_factory=RealtimeStartRequest),
+    db: Session = Depends(get_db),
 ):
     """Start the real-time channel listener."""
     from app.services import realtime_listener
+    tokens = db.query(AccountToken).filter(AccountToken.is_active.is_(True)).all()
+    for token_row in tokens:
+        await token_manager.health_check(db, token_row)
 
     result = realtime_listener.start_listener(interval_ms=request.interval_ms)
     log_event('realtime_listener_started', {'interval_ms': request.interval_ms})
@@ -1193,3 +1202,6 @@ def realtime_events(
         )
         for r in rows
     ]
+
+
+router.include_router(tools_router)
