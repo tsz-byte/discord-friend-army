@@ -24,19 +24,16 @@ class Settings(BaseSettings):
     openrouter_temperature: float = Field(default=0.7)
     openrouter_response_timeout: int = Field(default=30)
 
-    captcha_service: str = Field(default='anysolver')
-    captcha_fallback_services: str = Field(default='2captcha,anticaptcha,deathbycaptcha')
-    captcha_api_key: str = Field(default='')
-    captcha_base_url: str = Field(default='')
-    captcha_task_type: str = Field(default='PopularCaptchaTokenProxyLess')
-    captcha_ssl_verify: bool = Field(default=True)
-    captcha_ca_bundle_path: str = Field(default='')
-    captcha_2captcha_api_key: str = Field(default='')
-    anticaptcha_api_key: str = Field(default='')
-    deathbycaptcha_api_key: str = Field(default='')
-
+    # AnySolver captcha solver — the only supported provider.
+    # Obtain your API key from https://anysolver.com/dashboard
     anysolver_api_key: str = Field(default='')
     anysolver_base_url: str = Field(default='https://api.anysolver.com')
+    # Task type submitted to AnySolver. HCaptchaTaskProxyless is correct for Discord.
+    captcha_task_type: str = Field(default='HCaptchaTaskProxyless')
+    # TLS verification for AnySolver requests. Set to false only for troubleshooting.
+    captcha_ssl_verify: bool = Field(default=True)
+    # Optional path to a custom CA bundle file.
+    captcha_ca_bundle_path: str = Field(default='')
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')

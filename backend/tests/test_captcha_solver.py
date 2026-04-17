@@ -23,15 +23,20 @@ class _FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError('http error', request=httpx.Request('POST', 'https://example.com'), response=httpx.Response(self.status_code))
+            raise httpx.HTTPStatusError(
+                'http error',
+                request=httpx.Request('POST', 'https://example.com'),
+                response=httpx.Response(self.status_code),
+            )
 
 
 class _FakeAsyncClient:
+    """Simulates AnySolver API for unit tests."""
+
     def __init__(self, *args, **kwargs):
         self.verify = kwargs.get('verify')
         self.timeout = kwargs.get('timeout')
         self.posts = []
-        self.gets = []
 
     async def __aenter__(self):
         return self
@@ -40,32 +45,41 @@ class _FakeAsyncClient:
         return False
 
     async def post(self, url, json=None, data=None, params=None):
-        self.posts.append({'url': url, 'json': json, 'data': data, 'params': params})
-        if 'api.anysolver.com/createTask' in url:
+        self.posts.append({'url': url, 'json': json})
+        if 'createTask' in url:
             return _FakeResponse({'errorId': 0, 'taskId': 'task-123'})
-        if 'api.anysolver.com/getTaskResult' in url:
-            return _FakeResponse({'errorId': 0, 'status': 'ready', 'cost': '0.0025', 'solution': {'gRecaptchaResponse': 'solved-token', 'rqtoken': 'rq-token'}})
-        if 'api.2captcha.com/createTask' in url:
-            return _FakeResponse({'errorId': 0, 'taskId': 'task-2captcha'})
-        if 'api.2captcha.com/getTaskResult' in url:
-            return _FakeResponse({'errorId': 0, 'status': 'ready', 'solution': {'token': 'solved-by-2captcha'}})
+        if 'getTaskResult' in url:
+            return _FakeResponse({
+                'errorId': 0,
+                'status': 'ready',
+                'cost': '0.0025',
+                'solution': {'gRecaptchaResponse': 'solved-token', 'rqtoken': 'rq-token'},
+            })
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown endpoint'}, status_code=400)
 
-    async def get(self, url, params=None):
-        self.gets.append({'url': url, 'params': params})
-        return _FakeResponse({'captcha': '0'})
 
+class _ProcessingThenReadyClient(_FakeAsyncClient):
+    """Returns 'processing' on first poll, then 'ready'."""
 
-class _FallbackAsyncClient(_FakeAsyncClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._get_task_result_calls = 0
+
     async def post(self, url, json=None, data=None, params=None):
-        self.posts.append({'url': url, 'json': json, 'data': data, 'params': params})
-        if 'api.anysolver.com/createTask' in url:
-            raise httpx.ConnectError('ssl failed', request=httpx.Request('POST', url))
-        if 'api.2captcha.com/createTask' in url:
-            return _FakeResponse({'errorId': 0, 'taskId': 'task-2captcha'})
-        if 'api.2captcha.com/getTaskResult' in url:
-            return _FakeResponse({'errorId': 0, 'status': 'ready', 'solution': {'token': 'fallback-token'}})
-        return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown endpoint'}, status_code=400)
+        self.posts.append({'url': url, 'json': json})
+        if 'createTask' in url:
+            return _FakeResponse({'errorId': 0, 'taskId': 'task-456'})
+        if 'getTaskResult' in url:
+            self._get_task_result_calls += 1
+            if self._get_task_result_calls == 1:
+                return _FakeResponse({'errorId': 0, 'status': 'processing'})
+            return _FakeResponse({
+                'errorId': 0,
+                'status': 'ready',
+                'cost': '0.003',
+                'solution': {'gRecaptchaResponse': 'late-token', 'rqtoken': 'late-rqtoken'},
+            })
+        return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
 
 
 def _make_db():
@@ -78,6 +92,11 @@ async def _sleep_noop(*args, **kwargs):
     return None
 
 
+# ------------------------------------------------------------------
+# Detection
+# ------------------------------------------------------------------
+
+
 def test_captcha_challenge_detection():
     assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k'})
     assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k', 'captcha_rqdata': 'r'})
@@ -87,22 +106,32 @@ def test_captcha_challenge_detection():
     assert not CaptchaSolverService.is_captcha_challenge(None)
 
 
-def test_solver_enabled_from_env(monkeypatch):
-    monkeypatch.delenv('DFA_CAPTCHA_API_KEY', raising=False)
+# ------------------------------------------------------------------
+# Enabled / disabled
+# ------------------------------------------------------------------
+
+
+def test_solver_disabled_when_no_api_key(monkeypatch):
     monkeypatch.delenv('DFA_ANYSOLVER_API_KEY', raising=False)
     get_settings.cache_clear()
     assert CaptchaSolverService().is_enabled is False
+    get_settings.cache_clear()
 
-    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'legacy-anysolver-key')
+
+def test_solver_enabled_from_env(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-api-key')
     get_settings.cache_clear()
     assert CaptchaSolverService().is_enabled is True
-
     get_settings.cache_clear()
+
+
+# ------------------------------------------------------------------
+# Successful solve flow
+# ------------------------------------------------------------------
 
 
 def test_solver_ready_flow_and_task_type(monkeypatch):
-    monkeypatch.setenv('DFA_CAPTCHA_SERVICE', 'anysolver')
-    monkeypatch.setenv('DFA_CAPTCHA_API_KEY', 'test-key')
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
     monkeypatch.setenv('DFA_CAPTCHA_TASK_TYPE', 'HCaptchaTaskProxyless')
     get_settings.cache_clear()
 
@@ -141,56 +170,221 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
     assert row.task_id == 'task-123'
     assert row.solver_status == 'ready'
 
+    # Verify correct task body was sent to AnySolver.
     create_call = fake_client.posts[0]
     assert create_call['json']['task']['type'] == 'HCaptchaTaskProxyless'
     assert create_call['json']['task']['rqdata'] == 'rq-data'
     assert create_call['json']['task']['data'] == 'rq-data'
+    assert create_call['json']['task']['websiteURL'] == 'https://discord.com'
+    assert create_call['json']['task']['websiteKey'] == 'site-key'
 
     get_settings.cache_clear()
 
 
-def test_fallback_to_next_service(monkeypatch):
-    monkeypatch.setenv('DFA_CAPTCHA_SERVICE', 'anysolver')
-    monkeypatch.setenv('DFA_CAPTCHA_FALLBACK_SERVICES', '2captcha')
-    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'anysolver-key')
-    monkeypatch.setenv('DFA_CAPTCHA_2CAPTCHA_API_KEY', '2captcha-key')
+def test_solver_persists_processing_then_ready(monkeypatch):
+    """DB row should be finalized as 'ready' after a processing intermediate poll."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
     get_settings.cache_clear()
 
-    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _FallbackAsyncClient)
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            return _ProcessingThenReadyClient(*args, **kwargs)
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    db = _make_db()
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'sk', 'captcha_rqdata': 'rd'},
+            user_agent='ua',
+            db=db,
+        )
+    )
+
+    assert result['status'] == 'ready'
+    assert result['captcha_key'] == 'late-token'
+    assert result['captcha_rqtoken'] == 'late-rqtoken'
+    row = db.query(CaptchaChallenge).order_by(CaptchaChallenge.id.desc()).first()
+    assert row.solver_status == 'ready'
+    assert row.attempts == 2
+
+    get_settings.cache_clear()
+
+
+def test_solver_no_rqdata(monkeypatch):
+    """Challenges without rqdata (sitekey-only) should still be solved."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _FakeAsyncClient)
     monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
 
     result = asyncio.run(
         CaptchaSolverService().solve_discord_challenge(
-            {
-                'captcha_sitekey': 'site-key',
-                'captcha_rqdata': 'rq-data',
-                'captcha_service': 'hcaptcha',
-            },
+            {'captcha_sitekey': 'site-key'},
             user_agent='ua',
         )
     )
 
     assert result['status'] == 'ready'
-    assert result['service'] == '2captcha'
-    assert result['captcha_key'] == 'fallback-token'
+    assert result['captcha_key'] == 'solved-token'
+    assert result['captcha_rqdata'] is None
 
     get_settings.cache_clear()
 
 
-def test_ssl_verify_configuration(monkeypatch):
-    monkeypatch.setenv('DFA_CAPTCHA_SERVICE', 'anysolver')
-    monkeypatch.setenv('DFA_CAPTCHA_API_KEY', 'test-key')
+# ------------------------------------------------------------------
+# SSL / TLS configuration
+# ------------------------------------------------------------------
+
+
+def test_ssl_verify_disabled(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
     monkeypatch.setenv('DFA_CAPTCHA_SSL_VERIFY', 'false')
     get_settings.cache_clear()
 
     service = CaptchaSolverService()
-    assert service._services['anysolver'].verify is False
+    assert service.verify is False
 
+    get_settings.cache_clear()
+
+
+def test_ssl_verify_custom_ca_bundle(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
     monkeypatch.setenv('DFA_CAPTCHA_SSL_VERIFY', 'true')
     monkeypatch.setenv('DFA_CAPTCHA_CA_BUNDLE_PATH', '/tmp/custom-ca.pem')
     get_settings.cache_clear()
 
-    service_with_ca = CaptchaSolverService()
-    assert service_with_ca._services['anysolver'].verify == '/tmp/custom-ca.pem'
+    service = CaptchaSolverService()
+    assert service.verify == '/tmp/custom-ca.pem'
+
+    get_settings.cache_clear()
+
+
+def test_ssl_verify_default_is_true(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    monkeypatch.delenv('DFA_CAPTCHA_SSL_VERIFY', raising=False)
+    monkeypatch.delenv('DFA_CAPTCHA_CA_BUNDLE_PATH', raising=False)
+    get_settings.cache_clear()
+
+    assert CaptchaSolverService().verify is True
+
+    get_settings.cache_clear()
+
+
+# ------------------------------------------------------------------
+# Error / failure paths
+# ------------------------------------------------------------------
+
+
+def test_solve_fails_when_not_enabled(monkeypatch):
+    monkeypatch.delenv('DFA_ANYSOLVER_API_KEY', raising=False)
+    get_settings.cache_clear()
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'sk'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'failed'
+    assert 'DFA_ANYSOLVER_API_KEY' in result['detail']
+
+    get_settings.cache_clear()
+
+
+def test_solve_fails_on_non_challenge_payload(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'error': 'unknown'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'failed'
+    assert 'captcha challenge' in result['detail']
+
+    get_settings.cache_clear()
+
+
+def test_solve_fails_on_create_task_error(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    class _ErrorClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kw):
+            if 'createTask' in url:
+                return _FakeResponse({'errorId': 1, 'errorDescription': 'Invalid API key'})
+            return _FakeResponse({'errorId': 0, 'status': 'processing'})
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _ErrorClient)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'sk'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'failed'
+    assert 'Invalid API key' in result['detail']
+
+    get_settings.cache_clear()
+
+
+def test_solve_writes_failed_row_to_db(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+    class _FailClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kw):
+            return _FakeResponse(
+                {'errorId': 1, 'errorDescription': 'quota exceeded'},
+                status_code=200,
+            )
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _FailClient)
+
+    db = _make_db()
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'sk'},
+            token_id=7,
+            guild_id='guild1',
+            user_agent='ua',
+            db=db,
+        )
+    )
+
+    assert result['status'] == 'failed'
+    row = db.query(CaptchaChallenge).first()
+    assert row is not None
+    assert row.solver_status == 'failed'
+    assert 'quota exceeded' in (row.error or '')
+    assert row.token_id == 7
+    assert row.guild_id == 'guild1'
 
     get_settings.cache_clear()

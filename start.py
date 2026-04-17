@@ -117,18 +117,11 @@ def load_api_config() -> None:
                         'MAX_TOKENS': 'DFA_OPENROUTER_MAX_TOKENS',
                         'TEMPERATURE': 'DFA_OPENROUTER_TEMPERATURE',
                         'RESPONSE_TIMEOUT': 'DFA_OPENROUTER_RESPONSE_TIMEOUT',
-                        'CAPTCHA_SERVICE': 'DFA_CAPTCHA_SERVICE',
-                        'CAPTCHA_FALLBACK_SERVICES': 'DFA_CAPTCHA_FALLBACK_SERVICES',
-                        'CAPTCHA_API_KEY': 'DFA_CAPTCHA_API_KEY',
-                        'CAPTCHA_BASE_URL': 'DFA_CAPTCHA_BASE_URL',
+                        'ANYSOLVER_API_KEY': 'DFA_ANYSOLVER_API_KEY',
+                        'ANYSOLVER_BASE_URL': 'DFA_ANYSOLVER_BASE_URL',
                         'CAPTCHA_TASK_TYPE': 'DFA_CAPTCHA_TASK_TYPE',
                         'CAPTCHA_SSL_VERIFY': 'DFA_CAPTCHA_SSL_VERIFY',
                         'CAPTCHA_CA_BUNDLE_PATH': 'DFA_CAPTCHA_CA_BUNDLE_PATH',
-                        'CAPTCHA_2CAPTCHA_API_KEY': 'DFA_CAPTCHA_2CAPTCHA_API_KEY',
-                        'ANTICAPTCHA_API_KEY': 'DFA_ANTICAPTCHA_API_KEY',
-                        'DEATHBYCAPTCHA_API_KEY': 'DFA_DEATHBYCAPTCHA_API_KEY',
-                        'ANYSOLVER_API_KEY': 'DFA_ANYSOLVER_API_KEY',
-                        'ANYSOLVER_BASE_URL': 'DFA_ANYSOLVER_BASE_URL',
                     }
                     env_key = env_map.get(key)
                     if env_key and value:
