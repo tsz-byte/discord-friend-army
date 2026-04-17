@@ -19,7 +19,7 @@ type QueueItem = { id: number; session_id: number; source_channel_id: string; ta
 type MirrorItem = { id: number; session_id: number; source_channel_id: string; target_channel_id: string; source_content: string; replicated_content: string; source_author_hash: string; responder_account_label: string; response_time_ms: number }
 type SystemStatus = { active_tokens: number; healthy_tokens: number; source_connections: number; target_connections: number; enabled_channel_mappings: number; queue_pending: number; queue_failed: number; sessions_completed: number }
 type ActivityLog = { timestamp: string; event_type: string; details: Record<string, unknown> }
-type ReplicationConfigSnapshot = { educational_replication_only: boolean; discord_api_base_url: string; discord_requests_per_minute: number; analytics_cache_ttl_seconds: number; openrouter_model: string }
+type ReplicationConfigSnapshot = { discord_api_base_url: string; discord_requests_per_minute: number; analytics_cache_ttl_seconds: number; openrouter_model: string }
 type DashboardStats = { active_accounts: number; healthy_accounts: number; total_proxies: number; healthy_proxies: number; active_syncs: number; messages_transferred: number; ai_requests_total: number; uptime_seconds: number }
 type ProxyRecord = { id: number; host: string; port: number; username: string; is_healthy: boolean; last_used: string | null; success_rate: number }
 type ProxyHealth = { total: number; healthy: number; unhealthy: number; proxies: ProxyRecord[] }
@@ -347,7 +347,7 @@ function App() {
   const runReplication = async () => {
     setError('')
     try {
-      const response = await fetch(`${API_BASE}/replication/control/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, target_guild_id: targetGuildId, turn_count: turnCount, context_tag_trigger: contextTagTrigger, educational_mode_confirmed: true }) })
+      const response = await fetch(`${API_BASE}/replication/control/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_guild_id: sourceGuildId, target_guild_id: targetGuildId, turn_count: turnCount, context_tag_trigger: contextTagTrigger }) })
       if (!response.ok) throw new Error('Failed to start replication run')
       setReplicationRun((await response.json()) as ReplicationRun)
       await loadReplicationData()
@@ -1312,7 +1312,6 @@ function App() {
             <section className="panel">
               <h3>📋 Active Configuration Snapshot</h3>
               <div className="config-list">
-                <div className="config-row"><span>Educational-only mode</span><strong>{configSnapshot?.educational_replication_only ? '✅ Enabled' : '❌ Disabled'}</strong></div>
                 <div className="config-row"><span>Discord API base URL</span><strong>{configSnapshot?.discord_api_base_url ?? '-'}</strong></div>
                 <div className="config-row"><span>Discord RPM limit</span><strong>{configSnapshot?.discord_requests_per_minute ?? 0}</strong></div>
                 <div className="config-row"><span>Cache TTL (seconds)</span><strong>{configSnapshot?.analytics_cache_ttl_seconds ?? 0}</strong></div>

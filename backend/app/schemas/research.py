@@ -77,7 +77,7 @@ class ServerConnectionRequest(BaseModel):
     role: str = Field(pattern='^(source|target)$')
     invite_link: str | None = Field(default=None, max_length=512)
     enabled: bool = True
-    research_scope: str = 'educational_replication'
+    research_scope: str = 'replication'
 
 
 class ServerConnectionResponse(BaseModel):
@@ -102,7 +102,6 @@ class ReplicationStartRequest(BaseModel):
     target_guild_id: str
     turn_count: int = Field(default=8, ge=1, le=100)
     context_tag_trigger: str = '@'
-    educational_mode_confirmed: bool = False
 
 
 class ReplicationResponse(BaseModel):

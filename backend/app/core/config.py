@@ -40,7 +40,6 @@ class Settings(BaseSettings):
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')
-    educational_replication_only: bool = Field(default=True)
 
     @model_validator(mode='after')
     def validate_runtype_and_token(self) -> 'Settings':
