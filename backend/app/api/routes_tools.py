@@ -182,7 +182,12 @@ async def server_joiner_join(request: ServerJoinRequest, db: Session = Depends(g
             db=db,
         )
         if result.get('code') in (401, 403):
-            token_manager.mark_unhealthy(db, token_row, status='invalid')
+            token_manager.mark_unhealthy(
+                db,
+                token_row,
+                status='invalid',
+                deactivate=result.get('code') == 401,
+            )
         row = ServerJoinHistory(
             token_id=token_row.id,
             guild_id=request.guild_id,
@@ -237,7 +242,12 @@ async def server_joiner_bulk_join(request: ServerBulkJoinRequest, db: Session = 
                 db=db,
             )
             if result.get('code') in (401, 403):
-                token_manager.mark_unhealthy(db, token_row, status='invalid')
+                token_manager.mark_unhealthy(
+                    db,
+                    token_row,
+                    status='invalid',
+                    deactivate=result.get('code') == 401,
+                )
             history = ServerJoinHistory(
                 token_id=token_row.id,
                 guild_id=result.get('guild', {}).get('id') if isinstance(result.get('guild'), dict) else None,

@@ -295,7 +295,12 @@ async def send_message_from_token(
         proxy_url=proxy_url,
     )
     if result.get('code') in (401, 403):
-        token_manager.mark_unhealthy(db, row, status='invalid')
+        token_manager.mark_unhealthy(
+            db,
+            row,
+            status='invalid',
+            deactivate=result.get('code') == 401,
+        )
     row.usage_count = (row.usage_count or 0) + 1
     db.commit()
     log_event(
@@ -1085,7 +1090,12 @@ async def join_server_with_onboarding(
             db=db,
         )
         if result.get('code') in (401, 403):
-            token_manager.mark_unhealthy(db, token_row, status='invalid')
+            token_manager.mark_unhealthy(
+                db,
+                token_row,
+                status='invalid',
+                deactivate=result.get('code') == 401,
+            )
         results.append({'token_id': token_row.id, 'label': token_row.label, **result})
         log_event(
             'server_join_attempted',

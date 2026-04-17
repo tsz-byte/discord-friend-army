@@ -247,7 +247,8 @@ async def _listener_loop() -> None:
                             _stats['failed'] = _stats.get('failed', 0) + 1
                             if result.get('code') in (401, 403):
                                 send_token_row.health_status = 'invalid'
-                                send_token_row.is_active = False
+                                if result.get('code') == 401:
+                                    send_token_row.is_active = False
                             _record_mapping_failure(mapping.id, mapping_failures, mapping_breaker_until)
                             logger.warning(
                                 'realtime_listener: send failed ch=%s token=%s: %s',

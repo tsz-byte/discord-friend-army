@@ -182,9 +182,11 @@ class TokenManagerService:
                     if username:
                         token.source_identity = username
                     token.health_status = 'healthy'
+                    token.is_active = True
                     break
                 if response.status_code == 401:
                     token.health_status = 'invalid'
+                    token.is_active = False
                     break
                 if response.status_code == 429 and attempt < max_attempts:
                     await self._sleep_before_retry(attempt)
