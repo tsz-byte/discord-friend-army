@@ -80,6 +80,7 @@ async def _sleep_noop(*args, **kwargs):
 
 def test_captcha_challenge_detection():
     assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k'})
+    assert CaptchaSolverService.is_captcha_challenge({'captcha_sitekey': 'k', 'captcha_rqdata': 'r'})
     assert not CaptchaSolverService.is_captcha_challenge({'captcha_rqdata': 'r'})
 
 
@@ -104,12 +105,12 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
 
     fake_client = _FakeAsyncClient()
 
-    class _Factory:
+    class _FakeClientFactory:
         def __call__(self, *args, **kwargs):
             fake_client.verify = kwargs.get('verify')
             return fake_client
 
-    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _FakeClientFactory())
     monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
 
     db = _make_db()

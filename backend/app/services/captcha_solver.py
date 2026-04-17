@@ -489,8 +489,7 @@ class CaptchaSolverService:
         return self._service_names[(idx + 1) % len(self._service_names)]
 
     def _failure_count(self, service_name: str) -> int:
-        failures = self._health.get(service_name, {}).get('failures', 0)
-        return int(failures) if isinstance(failures, (int, str)) and str(failures).isdigit() else 0
+        return int(self._health.get(service_name, {}).get('failures', 0))
 
     async def _mark_failed(
         self,
