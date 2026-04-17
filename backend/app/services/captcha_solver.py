@@ -16,6 +16,7 @@ logger = logging.getLogger('discord_research.captcha_solver')
 MAX_ERROR_LENGTH = 500
 BACKOFF_MAX_EXPONENT = 4
 SUPPORTED_CAPTCHA_SERVICES = ('anysolver', '2captcha', 'anticaptcha', 'deathbycaptcha')
+DBC_NOT_READY_VALUES = ('0', 'CAPTCHA_NOT_READY', 'NOT_READY')
 
 
 class BaseCaptchaService(ABC):
@@ -216,6 +217,7 @@ class DeathByCaptchaService(BaseCaptchaService):
             captcha_id = create_payload.get('captcha') or create_payload.get('id')
             if not captcha_id:
                 raw_text = str(create_payload.get('raw_text') or '')
+                # DBC can return CSV-like text where the first segment is id.
                 first_segment = raw_text.split(',', 1)[0] if raw_text else ''
                 if first_segment.isdigit():
                     captcha_id = first_segment
@@ -242,10 +244,10 @@ class DeathByCaptchaService(BaseCaptchaService):
                     raw_text = str(poll_data.get('raw_text') or '')
                     if ',' in raw_text:
                         token_candidate = raw_text.rsplit(',', 1)[-1]
-                        if token_candidate and token_candidate not in ('0', 'CAPTCHA_NOT_READY', 'NOT_READY'):
+                        if token_candidate and token_candidate not in DBC_NOT_READY_VALUES:
                             token = token_candidate
                 is_correct = poll_data.get('is_correct')
-                if token and str(token) not in ('0', 'CAPTCHA_NOT_READY', 'NOT_READY') and is_correct not in (False, 0, '0'):
+                if token and str(token) not in DBC_NOT_READY_VALUES and is_correct not in (False, 0, '0'):
                     return {
                         'status': 'ready',
                         'captcha_key': str(token),
@@ -281,8 +283,8 @@ class CaptchaSolverService:
     def is_captcha_challenge(payload: dict | None) -> bool:
         if not isinstance(payload, dict):
             return False
-        # Discord occasionally omits rqdata for some challenge variants, so
-        # sitekey-only challenges are still considered solvable.
+        # Treat sitekey-only payloads as valid challenges; rqdata may be absent
+        # on some Discord challenge variants.
         return bool(payload.get('captcha_sitekey'))
 
     async def solve_discord_challenge(
@@ -467,14 +469,14 @@ class CaptchaSolverService:
 
     def _record_service_success(self, service_name: str) -> None:
         health = self._health.setdefault(service_name, {'successes': 0, 'failures': 0, 'last_error': ''})
-        health['successes'] = int(health.get('successes', 0)) + 1
+        health['successes'] += 1
         health['last_error'] = ''
         if service_name in self._service_names:
             self._next_start_index = self._service_names.index(service_name)
 
     def _record_service_failure(self, service_name: str, detail: str) -> None:
         health = self._health.setdefault(service_name, {'successes': 0, 'failures': 0, 'last_error': ''})
-        health['failures'] = int(health.get('failures', 0)) + 1
+        health['failures'] += 1
         health['last_error'] = detail[:MAX_ERROR_LENGTH]
         if service_name in self._service_names:
             failed_index = self._service_names.index(service_name)
