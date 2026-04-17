@@ -859,6 +859,8 @@ def load_api_config():
         'MAX_TOKENS': 'DFA_OPENROUTER_MAX_TOKENS',
         'TEMPERATURE': 'DFA_OPENROUTER_TEMPERATURE',
         'RESPONSE_TIMEOUT': 'DFA_OPENROUTER_RESPONSE_TIMEOUT',
+        'ANYSOLVER_API_KEY': 'DFA_ANYSOLVER_API_KEY',
+        'ANYSOLVER_BASE_URL': 'DFA_ANYSOLVER_BASE_URL',
     }
     applied: list[str] = []
     for file_key, env_key in env_map.items():
@@ -1078,6 +1080,9 @@ async def join_server_with_onboarding(
             invite_code=invite_code,
             token=token_row.token_value,
             proxy_url=proxy_url,
+            token_id=token_row.id,
+            guild_id=guild_id,
+            db=db,
         )
         if result.get('code') in (401, 403):
             token_manager.mark_unhealthy(db, token_row, status='invalid')

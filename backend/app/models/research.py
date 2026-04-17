@@ -207,6 +207,25 @@ class ServerJoinHistory(Base):
     joined_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
 
+class CaptchaChallenge(Base):
+    __tablename__ = 'captcha_challenge'
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String(128), nullable=True, index=True)
+    token_id = Column(Integer, nullable=True, index=True)
+    guild_id = Column(String(32), nullable=True, index=True)
+    challenge_type = Column(String(64), nullable=False, default='hcaptcha')
+    sitekey = Column(String(255), nullable=True)
+    rqdata = Column(Text, nullable=True)
+    solver_status = Column(String(32), nullable=False, default='processing', index=True)
+    solved_token = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    cost_usd = Column(String(32), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class ClanTagHistory(Base):
     __tablename__ = 'clan_tag_history'
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Discord Friend Army - Unified Startup Script
 
-Loads t.txt (tokens), p.txt (proxies), and api_key.conf (OpenRouter config),
+Loads t.txt (tokens), p.txt (proxies), and api_key.conf (OpenRouter + AnySolver config),
 seeds the default base/target server connections, builds the frontend, and
 starts the FastAPI server on 127.0.0.1:8007.
 """
@@ -117,6 +117,8 @@ def load_api_config() -> None:
                         'MAX_TOKENS': 'DFA_OPENROUTER_MAX_TOKENS',
                         'TEMPERATURE': 'DFA_OPENROUTER_TEMPERATURE',
                         'RESPONSE_TIMEOUT': 'DFA_OPENROUTER_RESPONSE_TIMEOUT',
+                        'ANYSOLVER_API_KEY': 'DFA_ANYSOLVER_API_KEY',
+                        'ANYSOLVER_BASE_URL': 'DFA_ANYSOLVER_BASE_URL',
                     }
                     env_key = env_map.get(key)
                     if env_key and value:
