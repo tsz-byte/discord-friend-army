@@ -301,6 +301,7 @@ def test_solver_no_rqdata(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'solved-token'
     assert result['captcha_rqdata'] is None
+    assert result['anysolver_session_id'] == 'anysolver-session-123'
 
     # Verify rqdata/data keys are absent from the task body.
     assert captured, 'Expected at least one httpx.AsyncClient to be created'

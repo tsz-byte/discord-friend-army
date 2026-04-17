@@ -195,6 +195,8 @@ class CaptchaSolverService:
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
         session_result = await self._create_session()
         if session_result.get('status') != 'ready':
+            if session_result.get('detail'):
+                session_result['detail'] = f"Session creation failed: {session_result.get('detail')}"
             return session_result
         anysolver_session_id = str(session_result.get('session_id') or '')
         anysolver_user_agent = session_result.get('user_agent') or user_agent
@@ -267,7 +269,7 @@ class CaptchaSolverService:
         return {
             'status': 'ready',
             'session_id': str(session_id),
-            'user_agent': str(user_agent) if user_agent is not None else None,
+            'user_agent': str(user_agent) if user_agent else None,
             'task_id': result.get('task_id'),
             'cost_usd': result.get('cost_usd'),
             'attempts': result.get('attempts'),
