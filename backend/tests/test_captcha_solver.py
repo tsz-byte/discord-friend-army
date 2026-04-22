@@ -53,7 +53,16 @@ class _FakeAsyncClient:
                 'errorId': 0,
                 'status': 'ready',
                 'cost': '0.0025',
-                'solution': {'token': 'solved-token', 'rqtoken': 'rq-token'},
+                'solution': {
+                    'token': 'solved-token',
+                    'rqtoken': 'rq-token',
+                    'raw': {
+                        'ua': 'solver-ua',
+                        'lang': 'en-US',
+                        'contextId': 'ctx-123',
+                        'generated_pass_UUID': 'solved-token',
+                    },
+                },
             })
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown endpoint'}, status_code=400)
 
@@ -77,7 +86,11 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
                 'errorId': 0,
                 'status': 'ready',
                 'cost': '0.003',
-                'solution': {'token': 'late-token', 'rqtoken': 'late-rqtoken'},
+                'solution': {
+                    'token': 'late-token',
+                    'rqtoken': 'late-rqtoken',
+                    'raw': {'contextId': 'ctx-late', 'generated_pass_UUID': 'late-token'},
+                },
             })
         return _FakeResponse({'errorId': 1, 'errorDescription': 'unknown'}, status_code=400)
 
@@ -93,7 +106,11 @@ class _CreateTaskReadyClient(_FakeAsyncClient):
                 'status': 'ready',
                 'taskId': 'captcha-task-ready',
                 'cost': '0.004',
-                'solution': {'token': 'token-ready', 'rqtoken': 'rq-ready'},
+                'solution': {
+                    'token': 'token-ready',
+                    'rqtoken': 'rq-ready',
+                    'raw': {'contextId': 'ctx-ready', 'generated_pass_UUID': 'token-ready'},
+                },
             })
         if 'getTaskResult' in url:
             raise AssertionError('getTaskResult should not be called for createTask-ready responses')
@@ -185,10 +202,23 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
     assert result['captcha_key'] == 'solved-token'
     assert result['captcha_rqtoken'] == 'rq-token'
     assert result['captcha_rqdata'] == 'rq-data'
+    assert result['captcha_context_id'] == 'ctx-123'
+    assert result['captcha_context_id_empty'] is False
+    assert result['captcha_ua'] == 'solver-ua'
+    assert result['captcha_lang'] == 'en-US'
+    assert result['captcha_token_matches_generated_pass_uuid'] is True
     assert row is not None
     assert row.task_id == 'captcha-task-123'
     assert row.anysolver_session_id is None
     assert row.solver_status == 'ready'
+    assert row.captcha_context_id == 'ctx-123'
+    assert row.captcha_context_id_empty is False
+    assert row.solution_raw == {
+        'ua': 'solver-ua',
+        'lang': 'en-US',
+        'contextId': 'ctx-123',
+        'generated_pass_UUID': 'solved-token',
+    }
 
     # Verify AnySolver one-step flow and correct task body.
     assert len(fake_client.posts) >= 2  # one createTask + at least one getTaskResult
@@ -302,6 +332,7 @@ def test_solver_handles_create_task_ready_responses(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'token-ready'
     assert result['captcha_rqtoken'] == 'rq-ready'
+    assert result['captcha_context_id'] == 'ctx-ready'
     assert result['anysolver_session_id'] is None
 
     get_settings.cache_clear()
@@ -387,6 +418,46 @@ def test_solve_fails_on_non_challenge_payload(monkeypatch):
 
 def test_solve_fails_on_create_task_error(monkeypatch):
     monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    get_settings.cache_clear()
+
+
+def test_solve_fails_when_context_id_required_but_missing(monkeypatch):
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'key')
+    monkeypatch.setenv('DFA_CAPTCHA_REQUIRE_CONTEXT_ID', 'true')
+    get_settings.cache_clear()
+
+    class _EmptyContextClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            if 'createTask' in url:
+                return _FakeResponse({'errorId': 0, 'taskId': 'captcha-task-context'})
+            return _FakeResponse({
+                'errorId': 0,
+                'status': 'ready',
+                'solution': {
+                    'token': 'token-without-context',
+                    'raw': {'contextId': '', 'generated_pass_UUID': 'token-without-context'},
+                },
+            })
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', lambda *a, **k: _EmptyContextClient())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'failed'
+    assert 'contextId' in result['detail']
+
     get_settings.cache_clear()
 
     class _ErrorClient:

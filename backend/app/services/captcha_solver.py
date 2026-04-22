@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -9,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.research import CaptchaChallenge
+from app.services.captcha_debug_analyzer import CaptchaDebugAnalyzer
 
 logger = logging.getLogger('discord_research.captcha_solver')
+captcha_debug_logger = logging.getLogger('discord_research.captcha_solutions')
 MAX_ERROR_LENGTH = 500
 BACKOFF_MAX_EXPONENT = 4
 # Default AnySolver endpoint — override with DFA_ANYSOLVER_BASE_URL if needed.
@@ -62,6 +65,7 @@ class CaptchaSolverService:
         self.poll_max_delay_seconds: float = 8.0
         self.timeout_seconds: float = 30.0
         self.verify: bool | str = self._build_verify_value(settings)
+        self.require_context_id: bool = settings.captcha_require_context_id
 
     # ------------------------------------------------------------------
     # Public interface
@@ -117,7 +121,8 @@ class CaptchaSolverService:
         -------
         dict with ``status`` key:
         * ``'ready'``  — ``captcha_key``, ``captcha_rqtoken``, ``captcha_rqdata``,
-                         ``task_id``, ``cost_usd``, ``attempts``
+                         ``task_id``, ``cost_usd``, ``attempts``, ``captcha_solution_raw``,
+                         ``captcha_context_id``, ``captcha_context_id_empty``
         * ``'failed'`` — ``detail`` (human-readable error message)
         """
         if not self.is_enabled:
@@ -162,6 +167,9 @@ class CaptchaSolverService:
                 challenge_row.anysolver_session_id = result.get('anysolver_session_id')
                 challenge_row.solver_status = 'ready'
                 challenge_row.solved_token = str(result.get('captcha_key') or '')
+                challenge_row.solution_raw = result.get('captcha_solution_raw')
+                challenge_row.captcha_context_id = result.get('captcha_context_id')
+                challenge_row.captcha_context_id_empty = bool(result.get('captcha_context_id_empty'))
                 cost = result.get('cost_usd')
                 challenge_row.cost_usd = str(cost) if cost is not None else None
                 challenge_row.attempts = int(result.get('attempts') or 0)
@@ -179,6 +187,13 @@ class CaptchaSolverService:
                 'captcha_key': result.get('captcha_key'),
                 'captcha_rqtoken': result.get('captcha_rqtoken'),
                 'captcha_rqdata': result.get('captcha_rqdata'),
+                'captcha_solution_raw': result.get('captcha_solution_raw'),
+                'captcha_context_id': result.get('captcha_context_id'),
+                'captcha_context_id_empty': result.get('captcha_context_id_empty'),
+                'captcha_ua': result.get('captcha_ua'),
+                'captcha_lang': result.get('captcha_lang'),
+                'captcha_generated_pass_uuid': result.get('captcha_generated_pass_uuid'),
+                'captcha_token_matches_generated_pass_uuid': result.get('captcha_token_matches_generated_pass_uuid'),
                 'task_id': result.get('task_id'),
                 'anysolver_session_id': result.get('anysolver_session_id'),
                 'cost_usd': result.get('cost_usd'),
@@ -224,10 +239,44 @@ class CaptchaSolverService:
             return poll_result
 
         solution = poll_result.get('solution') or {}
-        # AnySolver returns the solved token as ``token`` for all
-        # PopularCaptcha* task types.  ``gRecaptchaResponse`` is
-        # accepted as a fallback for any future API shape changes.
-        token = solution.get('token') or solution.get('gRecaptchaResponse')
+        analysis = CaptchaDebugAnalyzer.analyze_solution(solution)
+        captcha_debug_logger.info(
+            'AnySolver captcha poll_result task_id=%s payload=%s',
+            poll_result.get('task_id'),
+            self._pretty_json(poll_result),
+        )
+        captcha_debug_logger.info(
+            'AnySolver captcha solution.raw task_id=%s payload=%s',
+            poll_result.get('task_id'),
+            self._pretty_json(analysis.get('raw') or {}),
+        )
+        if analysis.get('context_id_empty'):
+            logger.warning('AnySolver captcha solution has empty contextId task_id=%s', poll_result.get('task_id'))
+            captcha_debug_logger.warning(
+                'AnySolver captcha solution contextId is empty task_id=%s issues=%s',
+                poll_result.get('task_id'),
+                analysis.get('issues'),
+            )
+            if self.require_context_id:
+                return {
+                    'status': 'failed',
+                    'detail': 'AnySolver ready response has empty solution.raw.contextId',
+                    'task_id': poll_result.get('task_id'),
+                    'anysolver_session_id': None,
+                    'attempts': poll_result.get('attempts'),
+                }
+        token = analysis.get('token')
+        generated_pass_uuid = analysis.get('generated_pass_uuid')
+        if token and generated_pass_uuid and token != generated_pass_uuid:
+            logger.warning(
+                'AnySolver token mismatch: solution.token differs from solution.raw.generated_pass_UUID task_id=%s',
+                poll_result.get('task_id'),
+            )
+        captcha_debug_logger.info(
+            'AnySolver token comparison task_id=%s token_matches_generated_pass_uuid=%s',
+            poll_result.get('task_id'),
+            analysis.get('token_matches_generated_pass_uuid'),
+        )
         # rqtoken is required by Discord's challenge validation.
         rqtoken = solution.get('rqtoken') or existing_rqtoken
         if not token:
@@ -243,6 +292,13 @@ class CaptchaSolverService:
             'captcha_key': token,
             'captcha_rqtoken': rqtoken,
             'captcha_rqdata': str(rqdata) if rqdata is not None else None,
+            'captcha_solution_raw': analysis.get('raw') or {},
+            'captcha_context_id': analysis.get('context_id'),
+            'captcha_context_id_empty': analysis.get('context_id_empty'),
+            'captcha_ua': analysis.get('ua'),
+            'captcha_lang': analysis.get('lang'),
+            'captcha_generated_pass_uuid': generated_pass_uuid,
+            'captcha_token_matches_generated_pass_uuid': analysis.get('token_matches_generated_pass_uuid'),
             'task_id': poll_result.get('task_id'),
             'anysolver_session_id': None,
             'cost_usd': poll_result.get('cost_usd'),
@@ -428,6 +484,13 @@ class CaptchaSolverService:
             logger.info('AnySolver using custom CA bundle: %s', settings.captcha_ca_bundle_path)
             return settings.captcha_ca_bundle_path
         return True
+
+    @staticmethod
+    def _pretty_json(payload: object) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+        except TypeError:
+            return str(payload)
 
     async def _mark_failed(
         self,

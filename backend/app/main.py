@@ -43,6 +43,10 @@ def _run_schema_migrations() -> None:
     migrations: list[tuple[str, str, str]] = [
         # (table, column, column_definition)
         ('captcha_challenge', 'anysolver_session_id', 'VARCHAR(128)'),
+        ('captcha_challenge', 'solution_raw', 'JSON'),
+        ('captcha_challenge', 'captcha_context_id', 'TEXT'),
+        ('captcha_challenge', 'captcha_context_id_empty', 'BOOLEAN DEFAULT 0'),
+        ('captcha_challenge', 'retried_with_empty_context', 'BOOLEAN DEFAULT 0'),
     ]
     from sqlalchemy import inspect, text
 
