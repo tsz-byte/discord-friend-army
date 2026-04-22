@@ -185,7 +185,7 @@ def test_join_uses_captcha_solution(monkeypatch):
     assert fake_client.posts[1][1]['captcha_rqdata'] == 'rq-data'
 
 
-def test_join_tries_enriched_captcha_payload_after_token_only(monkeypatch):
+def test_join_retries_captcha_solve_on_second_challenge(monkeypatch):
     fake_client = _JoinTwoCaptchaAsyncClient()
 
     class _Factory:
@@ -230,20 +230,14 @@ def test_join_tries_enriched_captcha_payload_after_token_only(monkeypatch):
         client.join_guild_via_invite('abc123', 'token-value')
     )
 
+    expected_payload = {
+        'captcha_key': 'solved',
+        'captcha_rqtoken': 'rq',
+        'captcha_rqdata': 'rq-data',
+    }
     assert result['status'] == 'joined'
-    assert fake_client.posts[1][1] == {
-        'captcha_key': 'solved',
-        'captcha_rqtoken': 'rq',
-        'captcha_rqdata': 'rq-data',
-    }
-    assert fake_client.posts[2][1] == {
-        'captcha_key': 'solved',
-        'captcha_rqtoken': 'rq',
-        'captcha_rqdata': 'rq-data',
-        'captcha_context_id': 'ctx-1',
-        'captcha_ua': 'ua-1',
-        'captcha_lang': 'en-US',
-    }
+    assert fake_client.posts[1][1] == expected_payload
+    assert fake_client.posts[2][1] == expected_payload
 
 
 def test_join_uses_captcha_solver_only_for_captcha_challenges(monkeypatch):
