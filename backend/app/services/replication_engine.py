@@ -128,8 +128,16 @@ class ConversationReplicationEngine:
         for i in range(max_turns):
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
-                logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
-                break
+                if runtype != 'BOTT':
+                    # In USERT mode a user token is required to send; stop generation.
+                    logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
+                    break
+                # BOTT mode sends via webhook — user tokens are not required.
+                logger.debug('run_session: BOTT mode, no user token for turn %d; using bot identity', i + 1)
+
+            # Resolve the display label used for webhook identity / audit records.
+            sender_label: str = token.label if token is not None else 'DFA Mirror'
+            sender_id: int | None = token.id if token is not None else None
 
             pattern = random.choice(patterns) if patterns else None
             source_entry = source_pool[i]
@@ -145,7 +153,7 @@ class ConversationReplicationEngine:
                 prev = generated[-1]
                 sample = f"{context_tag_trigger}{prev['account_label']} {base_sample}"
                 context_aware = True
-                self._record_coordination_event(db, session.id, prev['account_label'], token.label, {'turn': i + 1})
+                self._record_coordination_event(db, session.id, prev['account_label'], sender_label, {'turn': i + 1})
 
             # Occasionally tag a random member of the target server to drive engagement.
             elif target_members and random.random() < tag_probability:
@@ -165,13 +173,13 @@ class ConversationReplicationEngine:
                     'source_author_hash': source_entry.get('source_author_hash', 'anonymized-source'),
                     'source_message_id': source_entry.get('source_message_id'),
                     'source_created_at': source_entry.get('source_created_at'),
-                    'responder_account_id': token.id,
-                    'responder_account_label': token.label,
+                    'responder_account_id': sender_id,
+                    'responder_account_label': sender_label,
                     'context_aware': context_aware,
                     'response_time_ms': response_time_ms,
                     'delivery_mode': 'webhook' if runtype == 'BOTT' else 'token',
                     'webhook_identity': {
-                        'username': token.label,
+                        'username': sender_label,
                     } if runtype == 'BOTT' else {},
                 },
                 # Items start as 'queued'; actual Discord HTTP sends are handled
@@ -185,8 +193,8 @@ class ConversationReplicationEngine:
 
             generated_message = {
                 'turn': i + 1,
-                'account_id': token.id,
-                'account_label': token.label,
+                'account_id': sender_id,
+                'account_label': sender_label,
                 'source_channel_id': mapping.source_channel_id,
                 'target_channel_id': mapping.target_channel_id,
                 'content': sample,
@@ -204,7 +212,7 @@ class ConversationReplicationEngine:
                     source_content=base_sample,
                     replicated_content=sample,
                     source_author_hash=source_entry.get('source_author_hash', 'anonymized-source'),
-                    responder_account_label=token.label,
+                    responder_account_label=sender_label,
                     response_time_ms=response_time_ms,
                 )
             )
@@ -265,6 +273,18 @@ class ConversationReplicationEngine:
         return get_settings().runtype
 
     @staticmethod
+    def _normalize_bot_auth(raw_token: str) -> str:
+        """Return a properly-prefixed Bot Authorization header value.
+
+        Handles the case where the stored token already includes the 'Bot ' prefix
+        so we never produce a double-prefixed value like 'Bot Bot <token>'.
+        """
+        stripped = raw_token.strip()
+        if stripped.lower().startswith('bot '):
+            return stripped
+        return f'Bot {stripped}'
+
+    @staticmethod
     def _read_bot_token(db: Session) -> str:
         row = db.query(AppSetting).filter(AppSetting.key == 'discord_bot_token').first()
         if row and row.value:
@@ -305,7 +325,7 @@ class ConversationReplicationEngine:
             bot_token = self._read_bot_token(db)
             if not bot_token:
                 return []
-            headers['Authorization'] = f'Bot {bot_token}'
+            headers['Authorization'] = self._normalize_bot_auth(bot_token)
         else:
             source_token = (
                 db.query(AccountToken)
