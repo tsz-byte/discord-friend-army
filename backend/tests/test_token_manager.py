@@ -138,3 +138,10 @@ async def test_health_check_does_not_deactivate_on_401(monkeypatch):
     assert checked.health_status == 'invalid'
     # Token must stay active so a subsequent successful check can re-enable it.
     assert checked.is_active is True
+
+
+def test_should_mark_invalid_from_result_only_for_auth_failures():
+    manager = TokenManagerService()
+    assert manager.should_mark_invalid_from_result({'code': 401}) == (True, True)
+    assert manager.should_mark_invalid_from_result({'code': 403, 'error_code': 40001}) == (True, False)
+    assert manager.should_mark_invalid_from_result({'code': 403, 'error_code': 50001, 'detail': 'Missing Access'}) == (False, False)

@@ -179,8 +179,15 @@ async def _dispatch_queued_items(db: Session) -> int:
         else:
             item.status = 'failed'
             item.error = f"{result.get('status')}: {result.get('detail', '')}"
-            if token is not None and result.get('code') == 401:
-                token.health_status = 'invalid'
+            if token is not None:
+                should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+                if should_mark_invalid:
+                    token_manager.mark_unhealthy(
+                        db,
+                        token,
+                        status='invalid',
+                        deactivate=should_deactivate,
+                    )
             logger.error(
                 'dispatch_queued_items: item %d failed — %s',
                 item.id,

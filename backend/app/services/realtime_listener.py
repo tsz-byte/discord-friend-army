@@ -302,7 +302,7 @@ async def _listener_loop() -> None:
                             event.status = 'failed'
                             event.error = f"{result.get('status')}: {result.get('detail', '')}"
                             _stats['failed'] = _stats.get('failed', 0) + 1
-                            if runtype == 'USERT' and result.get('code') in (401, 403) and event.token_id:
+                            if runtype == 'USERT' and event.token_id:
                                 send_token_row = (
                                     db.query(AccountToken)
                                     .filter(AccountToken.id == event.token_id)
@@ -310,11 +310,15 @@ async def _listener_loop() -> None:
                                 )
                                 if send_token_row is None:
                                     pass
-                                elif result.get('code') == 401:
-                                    send_token_row.is_active = False
-                                    send_token_row.health_status = 'invalid'
                                 else:
-                                    send_token_row.health_status = 'invalid'
+                                    should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+                                    if should_mark_invalid:
+                                        token_manager.mark_unhealthy(
+                                            db,
+                                            send_token_row,
+                                            status='invalid',
+                                            deactivate=should_deactivate,
+                                        )
                             _record_mapping_failure(mapping.id, mapping_failures, mapping_breaker_until)
                             logger.warning(
                                 'realtime_listener: send failed ch=%s token=%s: %s',
