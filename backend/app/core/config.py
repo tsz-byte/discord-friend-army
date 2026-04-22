@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')
 
+    # Discord client fingerprint — override these when Discord updates their client.
+    # client_build_number: read from window.GLOBAL_ENV.BUILD_NUMBER in the Discord web app.
+    discord_client_build_number: int = Field(default=375000)
+    # Chrome browser version to mimic in User-Agent and X-Super-Properties.
+    discord_chrome_version: str = Field(default='136.0.0.0')
+
+    # Join failure response logging.
+    # When enabled, every failed Discord guild-join attempt writes a JSON file
+    # with the full HTTP response to join_failure_log_dir.
+    join_failure_log_enabled: bool = Field(default=True)
+    join_failure_log_dir: str = Field(default='logs/join_failures')
+
     @model_validator(mode='after')
     def validate_runtype_and_token(self) -> 'Settings':
         runtype = (self.runtype or 'USERT').strip().upper()

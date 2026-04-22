@@ -111,3 +111,55 @@ def test_load_api_config():
 def test_load_api_config_missing():
     config = FileLoaderService.load_api_config('/nonexistent/api_key.conf')
     assert config == {}
+
+
+def test_load_tokens_file_retires_orphaned_tokens():
+    """Tokens present in the DB but absent from the file should be retired."""
+    db = _make_db()
+    token_manager = TokenManagerService()
+    # Pre-load a token directly (simulating a previously loaded token).
+    orphan = token_manager.upsert_token(
+        db=db,
+        label='orphan',
+        raw_token_value='MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8',
+        rotation_priority=10,
+    )
+    assert orphan.is_active is True
+
+    loader = FileLoaderService()
+    # New file contains ONLY a different token — the orphan should be retired.
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write('MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE\n')
+    try:
+        loaded, errors = loader.load_tokens_file(db, f.name, sync_active=True)
+        assert loaded == 1
+        assert errors == []
+        db.refresh(orphan)
+        assert orphan.is_active is False
+        assert orphan.health_status == 'retired'
+    finally:
+        os.unlink(f.name)
+
+
+def test_load_tokens_file_no_sync_keeps_orphans():
+    """When sync_active=False orphaned tokens must not be deactivated."""
+    db = _make_db()
+    token_manager = TokenManagerService()
+    orphan = token_manager.upsert_token(
+        db=db,
+        label='orphan',
+        raw_token_value='MTQ4MzU0NTA5MjU4ODMxMDY2OQ.GSITFd.bVNznSTbUb_sskxAVZMZnIeAfqhGuSI-ld8x_8',
+        rotation_priority=10,
+    )
+
+    loader = FileLoaderService()
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write('MTE5NjY2MDkwNjkwNjYyODE2OA.GssFyI.jZ9kiJ1uBwtKjn6VYM3GAeTiBPsA8R_kq92XhE\n')
+    try:
+        loaded, errors = loader.load_tokens_file(db, f.name, sync_active=False)
+        assert loaded == 1
+        assert errors == []
+        db.refresh(orphan)
+        assert orphan.is_active is True
+    finally:
+        os.unlink(f.name)

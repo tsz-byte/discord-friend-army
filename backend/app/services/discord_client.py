@@ -4,6 +4,9 @@ import json
 import logging
 import random
 import re
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -13,6 +16,7 @@ from app.services.captcha_solver import CaptchaSolverService
 
 logger = logging.getLogger('discord_research.discord_client')
 captcha_debug_logger = logging.getLogger('discord_research.captcha_solutions')
+join_failures_logger = logging.getLogger('discord_research.join_failures')
 RETRY_BASE_DELAY_SECONDS = 0.5
 RETRY_MAX_SLEEP_SECONDS = 2.0
 RETRY_JITTER_SECONDS = 0.2
@@ -31,39 +35,39 @@ _CONTEXT_PROPERTIES = base64.b64encode(
     ).encode()
 ).decode()
 
-_USER_AGENT = (
-    # Keep the Chrome version in sync with current stable Chrome releases
-    # to avoid outdated fingerprints being flagged by Discord.
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/124.0.0.0 Safari/537.36'
-)
 
-# X-Super-Properties mimics a standard web-client fingerprint.
-# client_build_number corresponds to a specific Discord web-client build;
-# update it periodically by reading window.GLOBAL_ENV.BUILD_NUMBER in the
-# Discord web app to keep the fingerprint current.
-_SUPER_PROPERTIES = base64.b64encode(
-    json.dumps(
-        {
-            'os': 'Windows',
-            'browser': 'Chrome',
-            'device': '',
-            'system_locale': 'en-US',
-            'browser_user_agent': _USER_AGENT,
-            'browser_version': '124.0.0.0',
-            'os_version': '10',
-            'referrer': '',
-            'referring_domain': '',
-            'referrer_current': '',
-            'referring_domain_current': '',
-            'release_channel': 'stable',
-            'client_build_number': 294707,
-            'client_event_source': None,
-        },
-        separators=(',', ':'),
-    ).encode()
-).decode()
+def _build_user_agent(chrome_version: str) -> str:
+    return (
+        f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        f'AppleWebKit/537.36 (KHTML, like Gecko) '
+        f'Chrome/{chrome_version} Safari/537.36'
+    )
+
+
+def _build_super_properties(chrome_version: str, build_number: int) -> str:
+    """Return base64-encoded X-Super-Properties header value."""
+    ua = _build_user_agent(chrome_version)
+    return base64.b64encode(
+        json.dumps(
+            {
+                'os': 'Windows',
+                'browser': 'Chrome',
+                'device': '',
+                'system_locale': 'en-US',
+                'browser_user_agent': ua,
+                'browser_version': chrome_version,
+                'os_version': '10',
+                'referrer': '',
+                'referring_domain': '',
+                'referrer_current': '',
+                'referring_domain_current': '',
+                'release_channel': 'stable',
+                'client_build_number': build_number,
+                'client_event_source': None,
+            },
+            separators=(',', ':'),
+        ).encode()
+    ).decode()
 
 
 class DiscordClient:
@@ -73,6 +77,18 @@ class DiscordClient:
         self.token = (settings.discord_bot_token or '').strip()
         self.runtype = settings.runtype
         self.captcha_solver = CaptchaSolverService()
+        self._chrome_version = settings.discord_chrome_version
+        self._build_number = settings.discord_client_build_number
+        self._user_agent = _build_user_agent(self._chrome_version)
+        self._super_properties = _build_super_properties(self._chrome_version, self._build_number)
+        self._join_failure_log_enabled = settings.join_failure_log_enabled
+        # Resolve the join failures directory relative to the project root so that
+        # relative paths in the config work correctly regardless of cwd.
+        _project_root = Path(__file__).resolve().parent.parent.parent.parent
+        _jf_dir = settings.join_failure_log_dir
+        self._join_failure_log_dir = (
+            Path(_jf_dir) if Path(_jf_dir).is_absolute() else _project_root / _jf_dir
+        )
 
     async def get_guild(self, guild_id: str) -> dict:
         if not self.token:
@@ -198,13 +214,25 @@ class DiscordClient:
         if not code:
             return {'status': 'failed', 'code': 400, 'detail': 'Invalid invite code format'}
 
+        # Generate a random session_id per join attempt, mimicking the Discord
+        # web client which links HTTP invite calls to its WebSocket gateway session.
+        session_id = secrets.token_hex(16)
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json',
             'X-Context-Properties': _CONTEXT_PROPERTIES,
-            'X-Super-Properties': _SUPER_PROPERTIES,
+            'X-Super-Properties': self._super_properties,
             'X-Discord-Locale': 'en-US',
-            'User-Agent': _USER_AGENT,
+            'X-Discord-Timezone': 'America/New_York',
+            'User-Agent': self._user_agent,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://discord.com',
+            'Referer': f'https://discord.com/invite/{code}',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
         }
         max_attempts = 5
         captcha_payload: dict = {}
@@ -216,7 +244,10 @@ class DiscordClient:
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
+                    # Always include session_id; merge captcha fields on top when present.
+                    body: dict = {'session_id': session_id}
                     if captcha_payload:
+                        body.update(captcha_payload)
                         logger.info(
                             'Discord join retry with captcha payload invite=%s token_id=%s guild_id=%s payload=%s',
                             code,
@@ -234,7 +265,7 @@ class DiscordClient:
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
                         headers=headers,
-                        json=captcha_payload or {},
+                        json=body,
                     )
                     if resp.status_code in (200, 201):
                         data = resp.json()
@@ -308,7 +339,7 @@ class DiscordClient:
                             error_payload,
                             token_id=token_id,
                             guild_id=guild_id,
-                            user_agent=_USER_AGENT,
+                            user_agent=self._user_agent,
                             proxy_url=proxy_url,
                             db=db,
                         )
@@ -347,21 +378,26 @@ class DiscordClient:
                             guild_id,
                             solve_result.get('detail'),
                         )
-                        return {
+                        failed_result = {
                             'status': 'failed',
                             'code': resp.status_code,
                             'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown error')}",
                         }
+                        self._log_join_failure(code, token_id, guild_id, resp, body)
+                        return failed_result
 
                     if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
                         retry_after_seconds = self._retry_after_seconds(resp)
                         await self._sleep_before_retry(attempt, retry_after_seconds=retry_after_seconds)
                         continue
-                    return {
+
+                    failed_result = {
                         'status': 'failed',
                         'code': resp.status_code,
                         'detail': json.dumps(error_payload, ensure_ascii=False),
                     }
+                    self._log_join_failure(code, token_id, guild_id, resp, body)
+                    return failed_result
                 except httpx.HTTPError as exc:
                     if attempt < max_attempts:
                         await self._sleep_before_retry(attempt)
@@ -397,6 +433,54 @@ class DiscordClient:
             return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str)
         except TypeError:
             return str(payload)
+
+    def _log_join_failure(
+        self,
+        invite_code: str,
+        token_id: int | None,
+        guild_id: str | None,
+        response: httpx.Response,
+        request_body: dict,
+    ) -> None:
+        """Write a full-response JSON file for a failed Discord join attempt.
+
+        The file is only written when join_failure_log_enabled=True.
+        Response headers are included as-is; the Authorization header is
+        stripped from request metadata to avoid leaking credentials.
+        """
+        join_failures_logger.warning(
+            'Discord join failed invite=%s token_id=%s guild_id=%s status=%s body=%s',
+            invite_code,
+            token_id,
+            guild_id,
+            response.status_code,
+            response.text[:500],
+        )
+
+        if not self._join_failure_log_enabled:
+            return
+
+        try:
+            self._join_failure_log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+            filename = f'join_failure_{ts}_invite_{invite_code}_token_{token_id}.json'
+            # Sanitise: never write the Authorization header to disk.
+            safe_req_body = {k: v for k, v in request_body.items() if k.lower() not in ('authorization',)}
+            record = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'invite_code': invite_code,
+                'token_id': token_id,
+                'guild_id': guild_id,
+                'http_status': response.status_code,
+                'response_headers': dict(response.headers),
+                'response_body': response.text,
+                'request_body': safe_req_body,
+            }
+            filepath = self._join_failure_log_dir / filename
+            filepath.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding='utf-8')
+            logger.debug('Join failure response written to %s', filepath)
+        except Exception as exc:  # pragma: no cover
+            logger.warning('Failed to write join failure log file: %s', exc)
 
     async def send_message(
         self,

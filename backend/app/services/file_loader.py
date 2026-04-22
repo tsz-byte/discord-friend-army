@@ -15,26 +15,42 @@ class FileLoaderService:
     def __init__(self) -> None:
         self.token_manager = TokenManagerService()
 
-    def load_tokens_file(self, db: Session, file_path: str) -> tuple[int, list[str]]:
+    def load_tokens_file(self, db: Session, file_path: str, sync_active: bool = True) -> tuple[int, list[str]]:
+        """Load tokens from *file_path* and upsert them into the database.
+
+        When *sync_active* is ``True`` (the default) any token that is currently
+        active in the database but is **not** present in the file will be
+        deactivated and marked as ``retired``.  This ensures that removing a
+        token from ``t.txt`` actually retires it from use without requiring a
+        manual database edit.
+        """
         if not os.path.isfile(file_path):
             return 0, [f'Token file not found: {file_path}']
         loaded = 0
         errors: list[str] = []
+        active_hashes: set[str] = set()
         with open(file_path, 'r', encoding='utf-8') as fh:
             for line_no, raw_line in enumerate(fh, start=1):
                 line = raw_line.strip()
                 if not line or line.startswith('#'):
                     continue
                 try:
-                    self.token_manager.upsert_token(
+                    record = self.token_manager.upsert_token(
                         db=db,
                         label=f'token-{line_no}',
                         raw_token_value=line,
                         rotation_priority=line_no * 10,
                     )
+                    active_hashes.add(record.token_hash)
                     loaded += 1
                 except (ValueError, Exception) as exc:
                     errors.append(f'Line {line_no}: {exc}')
+
+        if sync_active and active_hashes:
+            retired = self.token_manager.deactivate_orphaned_tokens(db, active_hashes)
+            if retired:
+                logger.info('load_tokens_file retired %d token(s) no longer in file: %s', retired, file_path)
+
         return loaded, errors
 
     def load_proxies_file(self, db: Session, file_path: str) -> tuple[int, list[str]]:
