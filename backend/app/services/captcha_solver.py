@@ -6,10 +6,11 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.research import CaptchaChallenge
+from app.models.research import CaptchaChallenge, ProxyEntry
 from app.services.captcha_debug_analyzer import CaptchaDebugAnalyzer
 
 logger = logging.getLogger('discord_research.captcha_solver')
@@ -159,7 +160,7 @@ class CaptchaSolverService:
             sitekey,
         )
 
-        result = await self._solve(challenge_payload, user_agent=user_agent, proxy_url=proxy_url)
+        result = await self._solve(challenge_payload, user_agent=user_agent, proxy_url=proxy_url, db=db)
 
         if result.get('status') == 'ready':
             if challenge_row is not None:
@@ -213,12 +214,26 @@ class CaptchaSolverService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _solve(self, challenge_payload: dict, *, user_agent: str, proxy_url: str | None = None) -> dict:
+    async def _solve(self, challenge_payload: dict, *, user_agent: str, proxy_url: str | None = None, db: Session | None = None) -> dict:
         """Low-level AnySolver captcha-create/poll flow (single step)."""
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
+
+        # Fallback proxy logic if none is provided
+        if not proxy_url and db is not None:
+            fallback_proxy = db.query(ProxyEntry).filter(ProxyEntry.is_healthy.is_(True)).order_by(func.random()).first()
+            if fallback_proxy:
+                scheme = 'http'
+                normalized_host = fallback_proxy.host
+                if '://' in normalized_host:
+                    scheme, normalized_host = normalized_host.split('://', 1)
+                if fallback_proxy.username and fallback_proxy.password:
+                    proxy_url = f'{scheme}://{fallback_proxy.username}:{fallback_proxy.password}@{normalized_host}:{fallback_proxy.port}'
+                else:
+                    proxy_url = f'{scheme}://{normalized_host}:{fallback_proxy.port}'
+                logger.info('AnySolver using fallback proxy from db for captcha solve')
 
         # Build the AnySolver PopularCaptcha* task body.
         # AnySolver's PopularCaptcha task types accept: type, websiteURL,

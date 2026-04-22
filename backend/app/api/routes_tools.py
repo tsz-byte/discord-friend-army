@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -16,11 +18,14 @@ from app.models.research import (
     ConversationTransferHistory,
     MimicProfile,
     NicknameHistory,
+    ProxyEntry,
     ServerConnection,
     ServerJoinHistory,
 )
 from app.services.discord_client import DiscordClient
 from app.services.token_manager import TokenManagerService
+
+logger = logging.getLogger('discord_research.tools')
 
 router = APIRouter(prefix='/tools', tags=['tools'])
 discord_client = DiscordClient()
@@ -138,7 +143,7 @@ def _select_tokens(db: Session, token_ids: list[int] | None = None) -> list[Acco
     return query.order_by(AccountToken.id.asc()).all()
 
 
-def _proxy_for_token(token_row: AccountToken, use_proxies: bool = True) -> str | None:
+def _proxy_for_token(db: Session, token_row: AccountToken, use_proxies: bool = True) -> str | None:
     if not use_proxies:
         return None
     if token_row.proxy_host and token_row.proxy_port:
@@ -147,6 +152,14 @@ def _proxy_for_token(token_row: AccountToken, use_proxies: bool = True) -> str |
             port=token_row.proxy_port,
             username=token_row.proxy_username or '',
             password=token_row.proxy_password or '',
+        )
+    fallback_proxy = db.query(ProxyEntry).filter(ProxyEntry.is_healthy.is_(True)).order_by(func.random()).first()
+    if fallback_proxy:
+        return token_manager.build_proxy_url(
+            host=fallback_proxy.host,
+            port=fallback_proxy.port,
+            username=fallback_proxy.username or '',
+            password=fallback_proxy.password or '',
         )
     return None
 
@@ -167,29 +180,49 @@ async def server_joiner_join(request: ServerJoinRequest, db: Session = Depends(g
         raise HTTPException(status_code=400, detail='No active tokens available')
 
     results: list[dict] = []
+    attempted_token_ids = set()
     for token_row in tokens:
-        checked = await _ensure_healthy(db, token_row)
+        current_token = token_row
+        attempted_token_ids.add(current_token.id)
+        checked = await _ensure_healthy(db, current_token)
+
+        # Fallback loop: if unhealthy, pick a new healthy token
+        fallback_attempts = 0
+        while checked.health_status != 'healthy' and fallback_attempts < 5:
+            logger.info('Token %s is unhealthy in server join, finding fallback', current_token.id)
+            fallback_token = db.query(AccountToken).filter(
+                AccountToken.is_active.is_(True),
+                AccountToken.health_status == 'healthy',
+                ~AccountToken.id.in_(attempted_token_ids)
+            ).order_by(func.random()).first()
+            if not fallback_token:
+                break
+            current_token = fallback_token
+            attempted_token_ids.add(current_token.id)
+            checked = await _ensure_healthy(db, current_token)
+            fallback_attempts += 1
+
         if checked.health_status != 'healthy':
-            results.append({'token_id': token_row.id, 'status': 'skipped', 'detail': f'token health is {checked.health_status}'})
+            results.append({'token_id': token_row.id, 'status': 'skipped', 'detail': 'failed to find a healthy token after fallbacks'})
             continue
 
         result = await discord_client.join_guild_via_invite(
             invite_code=code,
-            token=token_row.token_value,
-            proxy_url=_proxy_for_token(token_row, request.use_proxies),
-            token_id=token_row.id,
+            token=current_token.token_value,
+            proxy_url=_proxy_for_token(db, current_token, request.use_proxies),
+            token_id=current_token.id,
             guild_id=request.guild_id,
             db=db,
         )
         if result.get('code') in (401, 403):
             token_manager.mark_unhealthy(
                 db,
-                token_row,
+                current_token,
                 status='invalid',
                 deactivate=result.get('code') == 401,
             )
         row = ServerJoinHistory(
-            token_id=token_row.id,
+            token_id=current_token.id,
             guild_id=request.guild_id,
             invite_code=code,
             status=result.get('status', 'failed'),
@@ -197,7 +230,7 @@ async def server_joiner_join(request: ServerJoinRequest, db: Session = Depends(g
         )
         db.add(row)
         db.commit()
-        results.append({'token_id': token_row.id, **result})
+        results.append({'token_id': current_token.id, **result})
 
     successes = sum(1 for r in results if r.get('status') in {'joined', 'already_joined'})
     return {
@@ -236,7 +269,7 @@ async def server_joiner_bulk_join(request: ServerBulkJoinRequest, db: Session = 
             result = await discord_client.join_guild_via_invite(
                 invite,
                 token_row.token_value,
-                _proxy_for_token(token_row),
+                _proxy_for_token(db, token_row),
                 token_id=token_row.id,
                 guild_id=None,
                 db=db,
@@ -304,7 +337,7 @@ async def clan_tag_change(request: ClanTagChangeRequest, db: Session = Depends(g
 
     results = []
     for token_row in tokens:
-        result = await discord_client.patch_user_clan_tag(token_row.token_value, new_tag, _proxy_for_token(token_row))
+        result = await discord_client.patch_user_clan_tag(token_row.token_value, new_tag, _proxy_for_token(db, token_row))
         history = ClanTagHistory(
             token_id=token_row.id,
             previous_tag=None,
@@ -390,7 +423,7 @@ async def nickname_change(request: NicknameChangeRequest, db: Session = Depends(
             user_id=user_id,
             nickname=nickname,
             token=token_row.token_value,
-            proxy_url=_proxy_for_token(token_row),
+            proxy_url=_proxy_for_token(db, token_row),
         )
         row = NicknameHistory(
             token_id=token_id,
@@ -546,7 +579,7 @@ async def mimic_typing_simulator(request: TypingSimulatorRequest, db: Session = 
 
     end_at = datetime.now(timezone.utc).timestamp() + request.duration_seconds
     while datetime.now(timezone.utc).timestamp() < end_at:
-        await discord_client.trigger_typing(request.channel_id, token_row.token_value, _proxy_for_token(token_row))
+        await discord_client.trigger_typing(request.channel_id, token_row.token_value, _proxy_for_token(db, token_row))
         await asyncio.sleep(TYPING_INDICATOR_INTERVAL_SECONDS)
 
     send_result = None
@@ -555,7 +588,7 @@ async def mimic_typing_simulator(request: TypingSimulatorRequest, db: Session = 
             channel_id=request.channel_id,
             content=request.then_send,
             token=token_row.token_value,
-            proxy_url=_proxy_for_token(token_row),
+            proxy_url=_proxy_for_token(db, token_row),
         )
     return {
         'status': 'completed',
@@ -595,7 +628,7 @@ async def _capture_messages(channel_id: str, limit: int, db: Session) -> list[di
         channel_id=channel_id,
         token=token_row.token_value,
         limit=limit,
-        proxy_url=_proxy_for_token(token_row),
+        proxy_url=_proxy_for_token(db, token_row),
     )
 
 
@@ -632,7 +665,7 @@ async def conversation_transfer_with_context(request: ConversationTransferReques
             channel_id=request.target_channel_id,
             content=content[:2000],
             token=token_row.token_value,
-            proxy_url=_proxy_for_token(token_row),
+            proxy_url=_proxy_for_token(db, token_row),
         )
         if result.get('status') == 'sent':
             sent += 1
