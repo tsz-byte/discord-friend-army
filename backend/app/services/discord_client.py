@@ -370,24 +370,13 @@ class DiscordClient:
 
     @staticmethod
     def _build_captcha_payload_variants(solve_result: dict) -> list[dict]:
-        token_only = {'captcha_key': solve_result.get('captcha_key')}
+        payload: dict = {'captcha_key': solve_result.get('captcha_key')}
         if solve_result.get('captcha_rqtoken'):
-            token_only['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
+            payload['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
         captcha_rqdata = solve_result.get('captcha_rqdata')
         if captcha_rqdata:
-            token_only['captcha_rqdata'] = captcha_rqdata
-
-        enriched = dict(token_only)
-        if solve_result.get('captcha_context_id') is not None:
-            enriched['captcha_context_id'] = solve_result.get('captcha_context_id')
-        if solve_result.get('captcha_ua'):
-            enriched['captcha_ua'] = solve_result.get('captcha_ua')
-        if solve_result.get('captcha_lang'):
-            enriched['captcha_lang'] = solve_result.get('captcha_lang')
-
-        if enriched == token_only:
-            return [token_only]
-        return [token_only, enriched]
+            payload['captcha_rqdata'] = captcha_rqdata
+        return [payload]
 
     @staticmethod
     def _mark_empty_context_retry(db, task_id: str | None) -> None:
