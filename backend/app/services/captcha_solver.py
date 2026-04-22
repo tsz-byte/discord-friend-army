@@ -22,11 +22,10 @@ class CaptchaSolverService:
 
     Flow
     ----
-    1. Create browser session via PopularPlatformSessionAction (sessionType=discord)
-    2. Create PopularCaptcha* task with sessionId + Discord challenge fields
-    3. Poll /getTaskResult with exponential back-off until status == 'ready'
-    4. Extract ``token`` (primary) from the solution and ``rqtoken`` if present
-    5. Return captcha_key / captcha_rqtoken / captcha_rqdata to the caller
+    1. Create PopularCaptcha* task with Discord challenge fields
+    2. Poll /getTaskResult with exponential back-off until status == 'ready'
+    3. Extract ``token`` (primary) from the solution and ``rqtoken`` if present
+    4. Return captcha_key / captcha_rqtoken / captcha_rqdata to the caller
 
     Discord-specific notes
     ----------------------
@@ -40,7 +39,7 @@ class CaptchaSolverService:
     AnySolver task body fields (PopularCaptcha* types)
     ---------------------------------------------------
     Required: type, websiteURL, websiteKey
-    Optional: rqdata, sessionId, proxy
+    Optional: rqdata, proxy
     Solution response: solution.token
 
     Top-level createTask body fields
@@ -200,34 +199,21 @@ class CaptchaSolverService:
     # ------------------------------------------------------------------
 
     async def _solve(self, challenge_payload: dict, *, user_agent: str, proxy_url: str | None = None) -> dict:
-        """Low-level AnySolver session-create + captcha-create/poll flow."""
+        """Low-level AnySolver captcha-create/poll flow (single step)."""
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
-        session_result = await self._create_session()
-        if session_result.get('status') != 'ready':
-            if session_result.get('detail'):
-                session_result['detail'] = f"Session creation failed: {session_result.get('detail')}"
-            return session_result
-        anysolver_session_id = str(session_result.get('session_id') or '')
-        anysolver_user_agent = session_result.get('user_agent') or user_agent
-        logger.info(
-            'AnySolver session created session_id=%s user_agent=%s',
-            anysolver_session_id,
-            str(anysolver_user_agent),
-        )
 
         # Build the AnySolver PopularCaptcha* task body.
         # AnySolver's PopularCaptcha task types accept: type, websiteURL,
-        # websiteKey, rqdata (optional), sessionId, proxy (optional).
+        # websiteKey, rqdata (optional), proxy (optional).
         # Do NOT include userAgent, isInvisible, data, or pageTitle — those are
         # not valid fields for PopularCaptcha* task types.
         task_body: dict = {
             'type': self.task_type,
             'websiteURL': website_url,
             'websiteKey': sitekey,
-            'sessionId': anysolver_session_id,
         }
         if rqdata:
             task_body['rqdata'] = str(rqdata)
@@ -235,7 +221,6 @@ class CaptchaSolverService:
             task_body['proxy'] = proxy_url
         poll_result = await self._create_task_and_poll(task_body, purpose='captcha')
         if poll_result.get('status') != 'ready':
-            poll_result['anysolver_session_id'] = anysolver_session_id
             return poll_result
 
         solution = poll_result.get('solution') or {}
@@ -250,7 +235,7 @@ class CaptchaSolverService:
                 'status': 'failed',
                 'detail': 'AnySolver ready response is missing the solution token',
                 'task_id': poll_result.get('task_id'),
-                'anysolver_session_id': anysolver_session_id,
+                'anysolver_session_id': None,
                 'attempts': poll_result.get('attempts'),
             }
         return {
@@ -259,34 +244,9 @@ class CaptchaSolverService:
             'captcha_rqtoken': rqtoken,
             'captcha_rqdata': str(rqdata) if rqdata is not None else None,
             'task_id': poll_result.get('task_id'),
-            'anysolver_session_id': anysolver_session_id,
+            'anysolver_session_id': None,
             'cost_usd': poll_result.get('cost_usd'),
             'attempts': poll_result.get('attempts'),
-        }
-
-    async def _create_session(self) -> dict:
-        """Create AnySolver Discord browser session (required before captcha tasks)."""
-        session_task = {'type': 'PopularPlatformSessionAction', 'sessionType': 'discord'}
-        result = await self._create_task_and_poll(session_task, purpose='session')
-        if result.get('status') != 'ready':
-            return result
-        solution = result.get('solution') or {}
-        session_id = solution.get('sessionId')
-        user_agent = solution.get('userAgent')
-        if not session_id:
-            return {
-                'status': 'failed',
-                'detail': 'AnySolver session response is missing solution.sessionId',
-                'task_id': result.get('task_id'),
-                'attempts': result.get('attempts'),
-            }
-        return {
-            'status': 'ready',
-            'session_id': str(session_id),
-            'user_agent': str(user_agent) if user_agent else None,
-            'task_id': result.get('task_id'),
-            'cost_usd': result.get('cost_usd'),
-            'attempts': result.get('attempts'),
         }
 
     async def _create_task_and_poll(self, task_body: dict, *, purpose: str) -> dict:
