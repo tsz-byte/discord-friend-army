@@ -47,21 +47,8 @@ class _FakeAsyncClient:
     async def post(self, url, json=None, data=None, params=None):
         self.posts.append({'url': url, 'json': json})
         if 'createTask' in url:
-            task_type = (json or {}).get('task', {}).get('type')
-            if task_type == 'PopularPlatformSessionAction':
-                return _FakeResponse({'errorId': 0, 'taskId': 'session-task-123'})
             return _FakeResponse({'errorId': 0, 'taskId': 'captcha-task-123'})
         if 'getTaskResult' in url:
-            task_id = (json or {}).get('taskId')
-            if task_id == 'session-task-123':
-                return _FakeResponse({
-                    'errorId': 0,
-                    'status': 'ready',
-                    'solution': {
-                        'sessionId': 'anysolver-session-123',
-                        'userAgent': 'anysolver-user-agent',
-                    },
-                })
             return _FakeResponse({
                 'errorId': 0,
                 'status': 'ready',
@@ -81,18 +68,8 @@ class _ProcessingThenReadyClient(_FakeAsyncClient):
     async def post(self, url, json=None, data=None, params=None):
         self.posts.append({'url': url, 'json': json})
         if 'createTask' in url:
-            task_type = (json or {}).get('task', {}).get('type')
-            if task_type == 'PopularPlatformSessionAction':
-                return _FakeResponse({'errorId': 0, 'taskId': 'session-task-456'})
             return _FakeResponse({'errorId': 0, 'taskId': 'captcha-task-456'})
         if 'getTaskResult' in url:
-            task_id = (json or {}).get('taskId')
-            if task_id == 'session-task-456':
-                return _FakeResponse({
-                    'errorId': 0,
-                    'status': 'ready',
-                    'solution': {'sessionId': 'anysolver-session-456', 'userAgent': 'ua-from-session'},
-                })
             self._get_task_result_calls += 1
             if self._get_task_result_calls == 1:
                 return _FakeResponse({'errorId': 0, 'status': 'processing'})
@@ -111,14 +88,6 @@ class _CreateTaskReadyClient(_FakeAsyncClient):
     async def post(self, url, json=None, data=None, params=None):
         self.posts.append({'url': url, 'json': json})
         if 'createTask' in url:
-            task_type = (json or {}).get('task', {}).get('type')
-            if task_type == 'PopularPlatformSessionAction':
-                return _FakeResponse({
-                    'errorId': 0,
-                    'status': 'ready',
-                    'taskId': 'session-task-ready',
-                    'solution': {'sessionId': 'session-ready', 'userAgent': 'ua-ready'},
-                })
             return _FakeResponse({
                 'errorId': 0,
                 'status': 'ready',
@@ -218,18 +187,16 @@ def test_solver_ready_flow_and_task_type(monkeypatch):
     assert result['captcha_rqdata'] == 'rq-data'
     assert row is not None
     assert row.task_id == 'captcha-task-123'
-    assert row.anysolver_session_id == 'anysolver-session-123'
+    assert row.anysolver_session_id is None
     assert row.solver_status == 'ready'
 
-    # Verify AnySolver two-step flow and correct task body.
-    assert fake_client.posts[0]['json']['task']['type'] == 'PopularPlatformSessionAction'
-    create_call = fake_client.posts[2]
+    # Verify AnySolver one-step flow and correct task body.
+    assert len(fake_client.posts) >= 2  # one createTask + at least one getTaskResult
+    create_call = fake_client.posts[0]
     task_json = create_call['json']['task']
     assert task_json['type'] == 'PopularCaptchaEnterpriseInvisibleTokenProxyLess'
     assert task_json['rqdata'] == 'rq-data'
-    assert task_json['sessionId'] == 'anysolver-session-123'
-    # Ensure Discord captcha_session_id is NOT used as AnySolver sessionId.
-    assert task_json['sessionId'] != 'discord-session-id'
+    assert 'sessionId' not in task_json
     # data field must NOT be present (not valid for PopularCaptcha* task types)
     assert 'data' not in task_json
     # userAgent must NOT be present (not valid for PopularCaptcha* task types)
@@ -268,7 +235,7 @@ def test_solver_persists_processing_then_ready(monkeypatch):
     assert result['captcha_rqtoken'] == 'late-rqtoken'
     row = db.query(CaptchaChallenge).order_by(CaptchaChallenge.id.desc()).first()
     assert row.solver_status == 'ready'
-    assert row.anysolver_session_id == 'anysolver-session-456'
+    assert row.anysolver_session_id is None
     assert row.attempts == 2
 
     get_settings.cache_clear()
@@ -301,15 +268,14 @@ def test_solver_no_rqdata(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'solved-token'
     assert result['captcha_rqdata'] is None
-    assert result['anysolver_session_id'] == 'anysolver-session-123'
+    assert result['anysolver_session_id'] is None
 
     # Verify rqdata/data keys are absent from the task body.
     assert captured, 'Expected at least one httpx.AsyncClient to be created.'
     all_posts = [post for client in captured for post in client.posts]
     create_calls = [post for post in all_posts if 'createTask' in post['url']]
-    assert create_calls[0]['json']['task']['type'] == 'PopularPlatformSessionAction'
-    captcha_create_body = create_calls[1]['json']
-    assert captcha_create_body['task']['sessionId'] == 'anysolver-session-123'
+    captcha_create_body = create_calls[0]['json']
+    assert 'sessionId' not in captcha_create_body['task']
     assert 'rqdata' not in captcha_create_body['task']
     assert 'data' not in captcha_create_body['task']
 
@@ -336,7 +302,7 @@ def test_solver_handles_create_task_ready_responses(monkeypatch):
     assert result['status'] == 'ready'
     assert result['captcha_key'] == 'token-ready'
     assert result['captcha_rqtoken'] == 'rq-ready'
-    assert result['anysolver_session_id'] == 'session-ready'
+    assert result['anysolver_session_id'] is None
 
     get_settings.cache_clear()
 
@@ -531,12 +497,8 @@ def test_proxy_included_in_captcha_task_body(monkeypatch):
 
     all_posts = [post for client in captured for post in client.posts]
     create_calls = [post for post in all_posts if 'createTask' in post['url']]
-    # Session task must NOT include proxy
-    session_task = create_calls[0]['json']['task']
-    assert session_task['type'] == 'PopularPlatformSessionAction'
-    assert 'proxy' not in session_task
-    # Captcha task must include proxy
-    captcha_task = create_calls[1]['json']['task']
+    # Single captcha task must include proxy
+    captcha_task = create_calls[0]['json']['task']
     assert captcha_task['proxy'] == 'http://user:pass@proxy.example.com:8080'
 
     get_settings.cache_clear()
@@ -569,7 +531,7 @@ def test_proxy_absent_when_not_provided(monkeypatch):
 
     all_posts = [post for client in captured for post in client.posts]
     create_calls = [post for post in all_posts if 'createTask' in post['url']]
-    captcha_task = create_calls[1]['json']['task']
+    captcha_task = create_calls[0]['json']['task']
     assert 'proxy' not in captcha_task
 
     get_settings.cache_clear()
