@@ -116,17 +116,23 @@ class ConversationReplicationEngine:
             db.refresh(session)
             return session, generated
 
-        for i in range(turn_count):
-            if not source_pool:
-                logger.warning('run_session: source pool unexpectedly empty at turn %d; stopping session generation', i + 1)
-                break
+        max_turns = min(turn_count, len(source_pool))
+        if max_turns < turn_count:
+            logger.info(
+                'run_session: source pool has %d messages; limiting generated turns from %d to %d',
+                len(source_pool),
+                turn_count,
+                max_turns,
+            )
+
+        for i in range(max_turns):
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
                 logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
                 break
 
             pattern = random.choice(patterns) if patterns else None
-            source_entry = source_pool[i % len(source_pool)]
+            source_entry = source_pool[i]
             base_sample = source_entry['content']
             response_time_ms = self._compute_response_time(pattern)
 
