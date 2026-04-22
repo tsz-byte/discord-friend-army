@@ -117,6 +117,9 @@ class ConversationReplicationEngine:
             return session, generated
 
         for i in range(turn_count):
+            if not source_pool:
+                logger.warning('run_session: source pool unexpectedly empty at turn %d; stopping session generation', i + 1)
+                break
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
                 logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
@@ -344,7 +347,13 @@ class ConversationReplicationEngine:
             return []
 
         entries: list[dict] = []
-        for message in sorted(payload, key=lambda item: str(item.get('id', '0'))):
+        def _message_id_as_int(message: dict) -> int:
+            try:
+                return int(message.get('id') or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        for message in sorted(payload, key=_message_id_as_int):
             content = (message.get('content') or '').strip()
             if not content:
                 attachments = message.get('attachments') if isinstance(message.get('attachments'), list) else []
