@@ -185,8 +185,12 @@ class TokenManagerService:
                     token.is_active = True
                     break
                 if response.status_code == 401:
+                    # Mark as invalid but do NOT forcibly deactivate — a single 401
+                    # can be transient (proxy issue, temporary Discord error).  The
+                    # token stays is_active so it can still be used; callers that
+                    # receive a live 401 from an actual API action (join, send-message)
+                    # should call mark_unhealthy(..., deactivate=True) themselves.
                     token.health_status = 'invalid'
-                    token.is_active = False
                     break
                 if response.status_code == 429 and attempt < max_attempts:
                     await self._sleep_before_retry(attempt)
@@ -194,7 +198,8 @@ class TokenManagerService:
                 if response.status_code >= 500 and attempt < max_attempts:
                     await self._sleep_before_retry(attempt)
                     continue
-                token.health_status = 'invalid'
+                # Other non-success, non-retryable responses.
+                token.health_status = 'unreachable'
                 logger.warning(
                     'health_check non-success token_id=%s status=%s body=%s',
                     token.id,
@@ -251,3 +256,27 @@ class TokenManagerService:
         db.commit()
         db.refresh(selected)
         return selected
+
+    @staticmethod
+    def deactivate_orphaned_tokens(db: Session, active_hashes: set[str]) -> int:
+        """Deactivate tokens whose hash is not present in *active_hashes*.
+
+        This is called after reloading t.txt so that tokens removed from the
+        file are gracefully retired rather than staying indefinitely as stale
+        ``invalid`` entries.
+
+        Returns the number of tokens that were deactivated.
+        """
+        if not active_hashes:
+            return 0
+        orphans = (
+            db.query(AccountToken)
+            .filter(AccountToken.is_active.is_(True), ~AccountToken.token_hash.in_(active_hashes))
+            .all()
+        )
+        for token in orphans:
+            token.is_active = False
+            token.health_status = 'retired'
+        if orphans:
+            db.commit()
+        return len(orphans)

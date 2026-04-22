@@ -72,3 +72,20 @@ def configure_logging() -> None:
     captcha_logger.setLevel(logging.INFO)
     captcha_logger.handlers = [captcha_log_handler]
     captcha_logger.propagate = False
+
+    # --- Dedicated join-failures log ---
+    join_failures_dir = _PROJECT_ROOT / 'logs' / 'join_failures'
+    join_failures_dir.mkdir(parents=True, exist_ok=True)
+    join_failures_handler = logging.handlers.RotatingFileHandler(
+        str(join_failures_dir / 'join_failures.log'),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding='utf-8',
+    )
+    join_failures_handler.setLevel(logging.WARNING)
+    join_failures_handler.setFormatter(JsonFormatter())
+
+    join_failures_logger = logging.getLogger('discord_research.join_failures')
+    join_failures_logger.setLevel(logging.WARNING)
+    join_failures_logger.handlers = [join_failures_handler]
+    join_failures_logger.propagate = False

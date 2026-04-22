@@ -236,8 +236,11 @@ def test_join_retries_captcha_solve_on_second_challenge(monkeypatch):
         'captcha_rqdata': 'rq-data',
     }
     assert result['status'] == 'joined'
-    assert fake_client.posts[1][1] == expected_payload
-    assert fake_client.posts[2][1] == expected_payload
+    # Each retry body includes the captcha fields plus a session_id; check only
+    # that the captcha keys are present and correct (session_id is randomly generated).
+    for post_payload in (fake_client.posts[1][1], fake_client.posts[2][1]):
+        for key, val in expected_payload.items():
+            assert post_payload.get(key) == val
 
 
 def test_join_uses_captcha_solver_only_for_captcha_challenges(monkeypatch):
