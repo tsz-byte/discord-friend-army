@@ -603,7 +603,7 @@ def enqueue_replication_message(request: ReplicationControlRequest, db: Session 
         session = ReplicationSession(
             source_guild_id=request.source_guild_id,
             target_guild_id=request.target_guild_id,
-            mode='controlled',
+            mode='replication',
             status='running',
             account_plan=[],
             session_metrics={'manual_queue': True},
@@ -1197,7 +1197,7 @@ def compliance_methodology() -> ComplianceMethodology:
         methodology_version='2026.04',
         consent_model='Server-level opt-in plus participant-level transparency and opt-out controls',
         anonymization='All user identifiers are salted SHA-256 hashes; only redacted message excerpts and masked token previews are exposed',
-        retention_policy='Default 90-day retention with configurable deletion policies for GDPR/CCPA requests and controlled-environment replication datasets',
+        retention_policy='Default 90-day retention with configurable deletion policies for GDPR/CCPA requests and replication datasets',
         publication_support=[
             'Export-ready aggregate metrics',
             'Anonymized interaction network snapshots',

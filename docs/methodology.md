@@ -8,7 +8,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Engagement intensity
 - Interaction network topology
 - Topic and sentiment drift over time
-- Educational replication of conversation dynamics in controlled target servers
+- Cross-server replication fidelity based on direct source message transfer
 
 ## Data governance model
 
@@ -17,7 +17,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 3. **Anonymized identifiers** prevent direct attribution.
 4. **Redacted message excerpts** reduce exposure of sensitive free text.
 5. **Retention settings** support GDPR/CCPA-aligned data lifecycle workflows.
-6. **Controlled replication mode** requires explicit educational confirmation and preconfigured source/target server records.
+6. **Replication safeguards** require preconfigured source/target server records and explicit channel mappings.
 7. **Token minimization** stores masked token previews in APIs and excludes token values from activity logs.
 8. **Channel mapping controls** require explicit source-to-target mapping to constrain replication scope.
 9. **Queue and failure tracking** are retained for auditability and transparent recovery workflows.
@@ -30,7 +30,7 @@ The platform supports longitudinal and cross-sectional analyses of:
 - NLP model and prompt design (OpenRouter model name/version)
 - Known limitations and bias controls
 - Reproducibility notes for aggregate metric exports
-- Replication protocol constraints, including tag-response logic and controlled-environment scope
+- Replication protocol details, including transfer ordering and channel mapping scope
 - Replication quality metrics (coverage, response-time, context-hit rates) instead of claiming perfect fidelity
 
 ## Administrator value
@@ -39,19 +39,19 @@ The platform supports longitudinal and cross-sectional analyses of:
 - Channel activity timing patterns
 - Interaction graph transparency
 - Topic-level signal monitoring
-- Safe sandboxing workflows for educational replication experiments
+- Operational workflows for safe and reliable cross-server replication
 
 ## Researcher value
 
 - Exportable aggregate metrics for reports
 - Transparent methodology endpoint for appendices
 - Privacy-first defaults suitable for institutional review workflows
-- Account-token health monitoring and rotation metadata for reproducible replication studies
+- Account-token health monitoring and rotation metadata for reproducible replication analysis
 
-## Educational replication ethics checklist
+## Replication safeguards checklist
 
-- Use only explicit participant-informed and server-authorized environments.
+- Use only server-authorized environments with explicit channel mappings.
 - Never run replication workloads against communities without documented approval.
 - Keep all outputs anonymized in publications, demos, and data exports.
-- Maintain transparent logs for token health checks, pattern capture events, and replication sessions.
-- Present replication as best-effort educational simulation; avoid claims of exact user impersonation.
+- Maintain transparent logs for token health checks, source-history fetches, and replication sessions.
+- Preserve source message content and metadata (author hash, timestamps, and message IDs) during transfer.

@@ -4,6 +4,7 @@ import logging
 import random
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.models.research import (
@@ -16,6 +17,7 @@ from app.models.research import (
     ReplicationQueueItem,
     ReplicationSession,
 )
+from app.services.privacy import PrivacyService
 from app.services.token_manager import TokenManagerService
 
 logger = logging.getLogger('discord_research.replication_engine')
@@ -24,6 +26,7 @@ logger = logging.getLogger('discord_research.replication_engine')
 class ConversationReplicationEngine:
     def __init__(self) -> None:
         self.token_manager = TokenManagerService()
+        self.privacy = PrivacyService()
 
     def run_session(
         self,
@@ -67,7 +70,7 @@ class ConversationReplicationEngine:
         session = ReplicationSession(
             source_guild_id=source_guild_id,
             target_guild_id=target_guild_id,
-            mode='controlled',
+            mode='replication',
             status='running',
             account_plan=[
                 {'id': t.id, 'label': t.label, 'proxy_host': t.proxy_host, 'proxy_port': t.proxy_port}
@@ -94,6 +97,25 @@ class ConversationReplicationEngine:
             db.refresh(session)
             return session, generated
 
+        source_pool = self._fetch_source_channel_messages(
+            db=db,
+            source_guild_id=source_guild_id,
+            source_channel_id=mapping.source_channel_id,
+            limit=max(20, min(100, turn_count * 4)),
+        )
+        if not source_pool:
+            source_pool = self._source_pool_from_patterns(patterns)
+        if not source_pool:
+            logger.warning(
+                'run_session: no source message history available for channel %s; session marked failed',
+                mapping.source_channel_id,
+            )
+            session.status = 'failed'
+            session.session_metrics = {'turn_count': turn_count, 'generated_count': 0, 'reason': 'missing_source_messages'}
+            db.commit()
+            db.refresh(session)
+            return session, generated
+
         for i in range(turn_count):
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
@@ -101,10 +123,8 @@ class ConversationReplicationEngine:
                 break
 
             pattern = random.choice(patterns) if patterns else None
-            if pattern is not None and pattern.sample_messages:
-                base_sample = random.choice(pattern.sample_messages)
-            else:
-                base_sample = 'Educational replication placeholder.'
+            source_entry = source_pool[i % len(source_pool)]
+            base_sample = source_entry['content']
             response_time_ms = self._compute_response_time(pattern)
 
             sample = base_sample
@@ -133,7 +153,9 @@ class ConversationReplicationEngine:
                     'turn': i + 1,
                     'source_content': base_sample,
                     'replicated_content': sample,
-                    'source_author_hash': pattern.author_hash if pattern else 'anonymized-source',
+                    'source_author_hash': source_entry.get('source_author_hash', 'anonymized-source'),
+                    'source_message_id': source_entry.get('source_message_id'),
+                    'source_created_at': source_entry.get('source_created_at'),
                     'responder_account_id': token.id,
                     'responder_account_label': token.label,
                     'context_aware': context_aware,
@@ -172,7 +194,7 @@ class ConversationReplicationEngine:
                     target_channel_id=mapping.target_channel_id,
                     source_content=base_sample,
                     replicated_content=sample,
-                    source_author_hash=pattern.author_hash if pattern else 'anonymized-source',
+                    source_author_hash=source_entry.get('source_author_hash', 'anonymized-source'),
                     responder_account_label=token.label,
                     response_time_ms=response_time_ms,
                 )
@@ -232,3 +254,112 @@ class ConversationReplicationEngine:
         from app.core.config import get_settings
 
         return get_settings().runtype
+
+    @staticmethod
+    def _read_bot_token(db: Session) -> str:
+        row = db.query(AppSetting).filter(AppSetting.key == 'discord_bot_token').first()
+        if row and row.value:
+            return row.value.strip()
+        from app.core.config import get_settings
+
+        return (get_settings().discord_bot_token or '').strip()
+
+    @staticmethod
+    def _source_pool_from_patterns(patterns: list[MessagePattern]) -> list[dict]:
+        pool: list[dict] = []
+        for pattern in patterns:
+            for sample in pattern.sample_messages or []:
+                text = sample.strip() if isinstance(sample, str) else ''
+                if text:
+                    pool.append(
+                        {
+                            'content': text,
+                            'source_author_hash': pattern.author_hash,
+                            'source_message_id': None,
+                            'source_created_at': None,
+                        }
+                    )
+        return pool
+
+    def _fetch_source_channel_messages(
+        self,
+        db: Session,
+        source_guild_id: str,
+        source_channel_id: str,
+        limit: int,
+    ) -> list[dict]:
+        runtype = self._read_runtype(db)
+        headers: dict[str, str] = {}
+        proxy_url: str | None = None
+
+        if runtype == 'BOTT':
+            bot_token = self._read_bot_token(db)
+            if not bot_token:
+                return []
+            headers['Authorization'] = f'Bot {bot_token}'
+        else:
+            source_token = (
+                db.query(AccountToken)
+                .filter(AccountToken.is_active.is_(True), AccountToken.health_status.in_(['healthy', 'unknown']))
+                .order_by(AccountToken.id.asc())
+                .first()
+            )
+            if source_token is None:
+                return []
+            headers['Authorization'] = source_token.token_value
+            if source_token.proxy_host and source_token.proxy_port:
+                proxy_url = self.token_manager.build_proxy_url(
+                    host=source_token.proxy_host,
+                    port=source_token.proxy_port,
+                    username=source_token.proxy_username or '',
+                    password=source_token.proxy_password or '',
+                )
+
+        from app.core.config import get_settings
+
+        base_url = get_settings().discord_api_base_url.rstrip('/')
+        try:
+            with httpx.Client(timeout=20, proxy=proxy_url) as client:
+                response = client.get(
+                    f'{base_url}/channels/{source_channel_id}/messages',
+                    headers=headers,
+                    params={'limit': max(1, min(limit, 100))},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning('run_session: failed to fetch source messages for channel %s: %s', source_channel_id, exc)
+            return []
+
+        if response.status_code != 200:
+            logger.warning(
+                'run_session: source message fetch returned status=%s for channel %s',
+                response.status_code,
+                source_channel_id,
+            )
+            return []
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        if not isinstance(payload, list):
+            return []
+
+        entries: list[dict] = []
+        for message in sorted(payload, key=lambda item: str(item.get('id', '0'))):
+            content = (message.get('content') or '').strip()
+            if not content:
+                attachments = message.get('attachments') if isinstance(message.get('attachments'), list) else []
+                content = ' '.join(str(a.get('url', '')).strip() for a in attachments if isinstance(a, dict)).strip()
+            if not content:
+                continue
+            author = message.get('author') if isinstance(message.get('author'), dict) else {}
+            author_id = str(author.get('id') or '').strip()
+            author_hash = self.privacy.anonymize_user(source_guild_id, author_id) if author_id else 'anonymized-source'
+            entries.append(
+                {
+                    'content': content,
+                    'source_author_hash': author_hash,
+                    'source_message_id': str(message.get('id') or ''),
+                    'source_created_at': message.get('timestamp'),
+                }
+            )
+        return entries
