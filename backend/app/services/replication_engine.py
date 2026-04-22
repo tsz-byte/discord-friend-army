@@ -4,6 +4,7 @@ import logging
 import random
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.models.research import (
@@ -16,6 +17,7 @@ from app.models.research import (
     ReplicationQueueItem,
     ReplicationSession,
 )
+from app.services.privacy import PrivacyService
 from app.services.token_manager import TokenManagerService
 
 logger = logging.getLogger('discord_research.replication_engine')
@@ -24,6 +26,7 @@ logger = logging.getLogger('discord_research.replication_engine')
 class ConversationReplicationEngine:
     def __init__(self) -> None:
         self.token_manager = TokenManagerService()
+        self.privacy = PrivacyService()
 
     def run_session(
         self,
@@ -67,7 +70,7 @@ class ConversationReplicationEngine:
         session = ReplicationSession(
             source_guild_id=source_guild_id,
             target_guild_id=target_guild_id,
-            mode='controlled',
+            mode='replication',
             status='running',
             account_plan=[
                 {'id': t.id, 'label': t.label, 'proxy_host': t.proxy_host, 'proxy_port': t.proxy_port}
@@ -94,17 +97,51 @@ class ConversationReplicationEngine:
             db.refresh(session)
             return session, generated
 
-        for i in range(turn_count):
+        source_pool = self._fetch_source_channel_messages(
+            db=db,
+            source_guild_id=source_guild_id,
+            source_channel_id=mapping.source_channel_id,
+            limit=max(20, min(100, turn_count * 4)),
+        )
+        if not source_pool:
+            source_pool = self._source_pool_from_patterns(patterns)
+        if not source_pool:
+            logger.warning(
+                'run_session: no source message history available for channel %s; session marked failed',
+                mapping.source_channel_id,
+            )
+            session.status = 'failed'
+            session.session_metrics = {'turn_count': turn_count, 'generated_count': 0, 'reason': 'missing_source_messages'}
+            db.commit()
+            db.refresh(session)
+            return session, generated
+
+        max_turns = min(turn_count, len(source_pool))
+        if max_turns < turn_count:
+            logger.info(
+                'run_session: source pool has %d messages; limiting generated turns from %d to %d',
+                len(source_pool),
+                turn_count,
+                max_turns,
+            )
+
+        for i in range(max_turns):
             token = self.token_manager.pick_for_rotation(db)
             if token is None:
-                logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
-                break
+                if runtype != 'BOTT':
+                    # In USERT mode a user token is required to send; stop generation.
+                    logger.warning('run_session: no active tokens remaining at turn %d', i + 1)
+                    break
+                # BOTT mode sends via webhook — user tokens are not required.
+                logger.debug('run_session: BOTT mode, no user token for turn %d; using bot identity', i + 1)
+
+            # Resolve the display label used for webhook identity / audit records.
+            sender_label: str = token.label if token is not None else 'DFA Mirror'
+            sender_id: int | None = token.id if token is not None else None
 
             pattern = random.choice(patterns) if patterns else None
-            if pattern is not None and pattern.sample_messages:
-                base_sample = random.choice(pattern.sample_messages)
-            else:
-                base_sample = 'Educational replication placeholder.'
+            source_entry = source_pool[i]
+            base_sample = source_entry['content']
             response_time_ms = self._compute_response_time(pattern)
 
             sample = base_sample
@@ -116,7 +153,7 @@ class ConversationReplicationEngine:
                 prev = generated[-1]
                 sample = f"{context_tag_trigger}{prev['account_label']} {base_sample}"
                 context_aware = True
-                self._record_coordination_event(db, session.id, prev['account_label'], token.label, {'turn': i + 1})
+                self._record_coordination_event(db, session.id, prev['account_label'], sender_label, {'turn': i + 1})
 
             # Occasionally tag a random member of the target server to drive engagement.
             elif target_members and random.random() < tag_probability:
@@ -133,14 +170,16 @@ class ConversationReplicationEngine:
                     'turn': i + 1,
                     'source_content': base_sample,
                     'replicated_content': sample,
-                    'source_author_hash': pattern.author_hash if pattern else 'anonymized-source',
-                    'responder_account_id': token.id,
-                    'responder_account_label': token.label,
+                    'source_author_hash': source_entry.get('source_author_hash', 'anonymized-source'),
+                    'source_message_id': source_entry.get('source_message_id'),
+                    'source_created_at': source_entry.get('source_created_at'),
+                    'responder_account_id': sender_id,
+                    'responder_account_label': sender_label,
                     'context_aware': context_aware,
                     'response_time_ms': response_time_ms,
                     'delivery_mode': 'webhook' if runtype == 'BOTT' else 'token',
                     'webhook_identity': {
-                        'username': token.label,
+                        'username': sender_label,
                     } if runtype == 'BOTT' else {},
                 },
                 # Items start as 'queued'; actual Discord HTTP sends are handled
@@ -154,8 +193,8 @@ class ConversationReplicationEngine:
 
             generated_message = {
                 'turn': i + 1,
-                'account_id': token.id,
-                'account_label': token.label,
+                'account_id': sender_id,
+                'account_label': sender_label,
                 'source_channel_id': mapping.source_channel_id,
                 'target_channel_id': mapping.target_channel_id,
                 'content': sample,
@@ -172,8 +211,8 @@ class ConversationReplicationEngine:
                     target_channel_id=mapping.target_channel_id,
                     source_content=base_sample,
                     replicated_content=sample,
-                    source_author_hash=pattern.author_hash if pattern else 'anonymized-source',
-                    responder_account_label=token.label,
+                    source_author_hash=source_entry.get('source_author_hash', 'anonymized-source'),
+                    responder_account_label=sender_label,
                     response_time_ms=response_time_ms,
                 )
             )
@@ -232,3 +271,130 @@ class ConversationReplicationEngine:
         from app.core.config import get_settings
 
         return get_settings().runtype
+
+    @staticmethod
+    def _normalize_bot_auth(raw_token: str) -> str:
+        """Return a properly-prefixed Bot Authorization header value.
+
+        Handles the case where the stored token already includes the 'Bot ' prefix
+        so we never produce a double-prefixed value like 'Bot Bot <token>'.
+        """
+        stripped = raw_token.strip()
+        if stripped.lower().startswith('bot '):
+            return stripped
+        return f'Bot {stripped}'
+
+    @staticmethod
+    def _read_bot_token(db: Session) -> str:
+        row = db.query(AppSetting).filter(AppSetting.key == 'discord_bot_token').first()
+        if row and row.value:
+            return row.value.strip()
+        from app.core.config import get_settings
+
+        return (get_settings().discord_bot_token or '').strip()
+
+    @staticmethod
+    def _source_pool_from_patterns(patterns: list[MessagePattern]) -> list[dict]:
+        pool: list[dict] = []
+        for pattern in patterns:
+            for sample in pattern.sample_messages or []:
+                text = sample.strip() if isinstance(sample, str) else ''
+                if text:
+                    pool.append(
+                        {
+                            'content': text,
+                            'source_author_hash': pattern.author_hash,
+                            'source_message_id': None,
+                            'source_created_at': None,
+                        }
+                    )
+        return pool
+
+    def _fetch_source_channel_messages(
+        self,
+        db: Session,
+        source_guild_id: str,
+        source_channel_id: str,
+        limit: int,
+    ) -> list[dict]:
+        runtype = self._read_runtype(db)
+        headers: dict[str, str] = {}
+        proxy_url: str | None = None
+
+        if runtype == 'BOTT':
+            bot_token = self._read_bot_token(db)
+            if not bot_token:
+                return []
+            headers['Authorization'] = self._normalize_bot_auth(bot_token)
+        else:
+            source_token = (
+                db.query(AccountToken)
+                .filter(AccountToken.is_active.is_(True), AccountToken.health_status.in_(['healthy', 'unknown']))
+                .order_by(AccountToken.id.asc())
+                .first()
+            )
+            if source_token is None:
+                return []
+            headers['Authorization'] = source_token.token_value
+            if source_token.proxy_host and source_token.proxy_port:
+                proxy_url = self.token_manager.build_proxy_url(
+                    host=source_token.proxy_host,
+                    port=source_token.proxy_port,
+                    username=source_token.proxy_username or '',
+                    password=source_token.proxy_password or '',
+                )
+
+        from app.core.config import get_settings
+
+        base_url = get_settings().discord_api_base_url.rstrip('/')
+        try:
+            with httpx.Client(timeout=20, proxy=proxy_url) as client:
+                response = client.get(
+                    f'{base_url}/channels/{source_channel_id}/messages',
+                    headers=headers,
+                    params={'limit': max(1, min(limit, 100))},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning('run_session: failed to fetch source messages for channel %s: %s', source_channel_id, exc)
+            return []
+
+        if response.status_code != 200:
+            logger.warning(
+                'run_session: source message fetch returned status=%s for channel %s',
+                response.status_code,
+                source_channel_id,
+            )
+            return []
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        if not isinstance(payload, list):
+            return []
+
+        entries: list[dict] = []
+        def _message_id_as_int(message: dict) -> int:
+            try:
+                return int(message.get('id') or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        for message in sorted(payload, key=_message_id_as_int):
+            content = (message.get('content') or '').strip()
+            if not content:
+                attachments = message.get('attachments') if isinstance(message.get('attachments'), list) else []
+                content = ' '.join(str(a.get('url', '')).strip() for a in attachments if isinstance(a, dict)).strip()
+            if not content:
+                continue
+            author = message.get('author') if isinstance(message.get('author'), dict) else {}
+            author_id = str(author.get('id') or '').strip()
+            author_hash = self.privacy.anonymize_user(source_guild_id, author_id) if author_id else 'anonymized-source'
+            entries.append(
+                {
+                    'content': content,
+                    'source_author_hash': author_hash,
+                    'source_message_id': str(message.get('id') or ''),
+                    'source_created_at': message.get('timestamp'),
+                }
+            )
+        return entries

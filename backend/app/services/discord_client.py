@@ -345,10 +345,13 @@ class DiscordClient:
         webhook_name: str = 'DFA Mirror',
     ) -> dict:
         """Return a reusable webhook for a target channel."""
-        token = (bot_token or self.token or '').strip()
-        if not token:
+        raw = (bot_token or self.token or '').strip()
+        if not raw:
             return {'status': 'failed', 'detail': 'bot token missing'}
-        headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+        # Normalize: strip an existing 'Bot ' prefix before re-adding so we never
+        # produce a double-prefixed value like 'Bot Bot <token>'.
+        bare = raw[4:] if raw.lower().startswith('bot ') else raw
+        headers = {'Authorization': f'Bot {bare}', 'Content-Type': 'application/json'}
         async with httpx.AsyncClient(timeout=20) as client:
             try:
                 list_resp = await client.get(f'{self.base_url}/channels/{channel_id}/webhooks', headers=headers)

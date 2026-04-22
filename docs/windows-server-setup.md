@@ -1,6 +1,6 @@
 # Windows Server Setup Guide
 
-This guide configures the educational Discord replication research stack on Windows Server.
+This guide configures the Discord replication stack on Windows Server.
 
 ## Prerequisites
 
@@ -48,10 +48,9 @@ If PostgreSQL is configured but unreachable, backend startup automatically falls
 
 ## Operational Notes
 
-- Keep `DFA_EDUCATIONAL_REPLICATION_ONLY=true` in `backend/.env`.
 - Configure source and target servers before creating channel mappings.
 - Use queue and status dashboards to monitor failures and retry behavior.
-- Replication outputs are best-effort educational simulations, not perfect user impersonation.
+- Replication sends source-channel message history directly to mapped target channels.
 
 ## Troubleshooting
 

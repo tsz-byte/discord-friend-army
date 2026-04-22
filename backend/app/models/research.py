@@ -96,7 +96,7 @@ class ReplicationSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     source_guild_id = Column(String(32), nullable=False, index=True)
     target_guild_id = Column(String(32), nullable=False, index=True)
-    mode = Column(String(32), nullable=False, default='controlled')
+    mode = Column(String(32), nullable=False, default='replication')
     status = Column(String(32), nullable=False, default='idle')
     account_plan = Column(JSON, nullable=False, default=list)
     session_metrics = Column(JSON, nullable=False, default=dict)
