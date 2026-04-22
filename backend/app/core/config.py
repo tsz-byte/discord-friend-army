@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Discord uses enterprise invisible hCaptcha → PopularCaptchaEnterpriseInvisibleTokenProxyLess.
     # Override with DFA_CAPTCHA_TASK_TYPE if your target Discord endpoint uses a different variant.
     captcha_task_type: str = Field(default='PopularCaptchaEnterpriseInvisibleTokenProxyLess')
+    # Optional provider name forwarded in every AnySolver createTask body (e.g. "EZCaptcha").
+    # Leave empty to omit the field and use the default AnySolver routing.
+    captcha_provider: str = Field(default='')
     # TLS verification for AnySolver requests. Set to false only for troubleshooting.
     captcha_ssl_verify: bool = Field(default=True)
     # Optional path to a custom CA bundle file.

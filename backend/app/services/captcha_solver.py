@@ -40,8 +40,13 @@ class CaptchaSolverService:
     AnySolver task body fields (PopularCaptcha* types)
     ---------------------------------------------------
     Required: type, websiteURL, websiteKey
-    Optional: rqdata, sessionId
+    Optional: rqdata, sessionId, proxy
     Solution response: solution.token
+
+    Top-level createTask body fields
+    ---------------------------------
+    Required: clientKey, task
+    Optional: provider  (e.g. "EZCaptcha" — set DFA_CAPTCHA_PROVIDER to enable)
     """
 
     def __init__(self) -> None:
@@ -51,6 +56,8 @@ class CaptchaSolverService:
         # Task type sent to AnySolver.
         # Discord requires PopularCaptchaEnterpriseInvisibleTokenProxyLess.
         self.task_type: str = settings.captcha_task_type
+        # Optional provider forwarded in every createTask body (e.g. "EZCaptcha").
+        self.provider: str = settings.captcha_provider or ''
         self.poll_attempts: int = 20
         self.poll_base_delay_seconds: float = 2.0
         self.poll_max_delay_seconds: float = 8.0
@@ -84,6 +91,7 @@ class CaptchaSolverService:
         token_id: int | None = None,
         guild_id: str | None = None,
         user_agent: str,
+        proxy_url: str | None = None,
         db: Session | None = None,
     ) -> dict:
         """Solve a Discord hCaptcha challenge via AnySolver.
@@ -98,6 +106,10 @@ class CaptchaSolverService:
             Discord guild/server ID being joined.
         user_agent:
             User-Agent header used for the Discord invite request.
+        proxy_url:
+            Optional proxy URL (``http://user:pass@host:port``) to include in
+            the captcha task body so AnySolver uses the same outbound IP as the
+            Discord join request.  When *None* the task is solved proxyless.
         db:
             Optional SQLAlchemy session.  When provided a ``CaptchaChallenge``
             audit row is written for every attempt.
@@ -143,7 +155,7 @@ class CaptchaSolverService:
             sitekey,
         )
 
-        result = await self._solve(challenge_payload, user_agent=user_agent)
+        result = await self._solve(challenge_payload, user_agent=user_agent, proxy_url=proxy_url)
 
         if result.get('status') == 'ready':
             if challenge_row is not None:
@@ -187,7 +199,7 @@ class CaptchaSolverService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _solve(self, challenge_payload: dict, *, user_agent: str) -> dict:
+    async def _solve(self, challenge_payload: dict, *, user_agent: str, proxy_url: str | None = None) -> dict:
         """Low-level AnySolver session-create + captcha-create/poll flow."""
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
@@ -208,7 +220,7 @@ class CaptchaSolverService:
 
         # Build the AnySolver PopularCaptcha* task body.
         # AnySolver's PopularCaptcha task types accept: type, websiteURL,
-        # websiteKey, rqdata (optional), sessionId.
+        # websiteKey, rqdata (optional), sessionId, proxy (optional).
         # Do NOT include userAgent, isInvisible, data, or pageTitle — those are
         # not valid fields for PopularCaptcha* task types.
         task_body: dict = {
@@ -219,6 +231,8 @@ class CaptchaSolverService:
         }
         if rqdata:
             task_body['rqdata'] = str(rqdata)
+        if proxy_url:
+            task_body['proxy'] = proxy_url
         poll_result = await self._create_task_and_poll(task_body, purpose='captcha')
         if poll_result.get('status') != 'ready':
             poll_result['anysolver_session_id'] = anysolver_session_id
@@ -277,7 +291,9 @@ class CaptchaSolverService:
 
     async def _create_task_and_poll(self, task_body: dict, *, purpose: str) -> dict:
         """Create AnySolver task and poll until ready/failed/timeout."""
-        create_body = {'clientKey': self.api_key, 'task': task_body}
+        create_body: dict = {'clientKey': self.api_key, 'task': task_body}
+        if self.provider:
+            create_body['provider'] = self.provider
         logger.info('AnySolver %s task create start type=%s', purpose, task_body.get('type'))
         async with httpx.AsyncClient(timeout=self.timeout_seconds, verify=self.verify) as client:
             try:
