@@ -496,3 +496,157 @@ def test_solve_writes_failed_row_to_db(monkeypatch):
     assert row.anysolver_session_id is None
 
     get_settings.cache_clear()
+
+
+# ------------------------------------------------------------------
+# proxy field in captcha task body
+# ------------------------------------------------------------------
+
+
+def test_proxy_included_in_captcha_task_body(monkeypatch):
+    """When proxy_url is provided it must appear in the captcha task body."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
+    get_settings.cache_clear()
+
+    captured: list[_FakeAsyncClient] = []
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            client = _FakeAsyncClient(*args, **kwargs)
+            captured.append(client)
+            return client
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key', 'captcha_rqdata': 'rq-data'},
+            user_agent='ua',
+            proxy_url='http://user:pass@proxy.example.com:8080',
+        )
+    )
+
+    assert result['status'] == 'ready'
+
+    all_posts = [post for client in captured for post in client.posts]
+    create_calls = [post for post in all_posts if 'createTask' in post['url']]
+    # Session task must NOT include proxy
+    session_task = create_calls[0]['json']['task']
+    assert session_task['type'] == 'PopularPlatformSessionAction'
+    assert 'proxy' not in session_task
+    # Captcha task must include proxy
+    captcha_task = create_calls[1]['json']['task']
+    assert captcha_task['proxy'] == 'http://user:pass@proxy.example.com:8080'
+
+    get_settings.cache_clear()
+
+
+def test_proxy_absent_when_not_provided(monkeypatch):
+    """When no proxy_url is given the captcha task body must not include a proxy field."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
+    get_settings.cache_clear()
+
+    captured: list[_FakeAsyncClient] = []
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            client = _FakeAsyncClient(*args, **kwargs)
+            captured.append(client)
+            return client
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'ready'
+
+    all_posts = [post for client in captured for post in client.posts]
+    create_calls = [post for post in all_posts if 'createTask' in post['url']]
+    captcha_task = create_calls[1]['json']['task']
+    assert 'proxy' not in captcha_task
+
+    get_settings.cache_clear()
+
+
+# ------------------------------------------------------------------
+# provider field in createTask request body
+# ------------------------------------------------------------------
+
+
+def test_provider_included_in_create_task_body(monkeypatch):
+    """When DFA_CAPTCHA_PROVIDER is set it must appear in every createTask body."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
+    monkeypatch.setenv('DFA_CAPTCHA_PROVIDER', 'EZCaptcha')
+    get_settings.cache_clear()
+
+    captured: list[_FakeAsyncClient] = []
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            client = _FakeAsyncClient(*args, **kwargs)
+            captured.append(client)
+            return client
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'ready'
+
+    all_posts = [post for client in captured for post in client.posts]
+    create_calls = [post for post in all_posts if 'createTask' in post['url']]
+    for call in create_calls:
+        assert call['json']['provider'] == 'EZCaptcha', (
+            f"provider missing from createTask body: {call['json']}"
+        )
+
+    get_settings.cache_clear()
+
+
+def test_provider_absent_when_not_configured(monkeypatch):
+    """When DFA_CAPTCHA_PROVIDER is not set the provider key must be absent."""
+    monkeypatch.setenv('DFA_ANYSOLVER_API_KEY', 'test-key')
+    monkeypatch.delenv('DFA_CAPTCHA_PROVIDER', raising=False)
+    get_settings.cache_clear()
+
+    captured: list[_FakeAsyncClient] = []
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            client = _FakeAsyncClient(*args, **kwargs)
+            captured.append(client)
+            return client
+
+    monkeypatch.setattr('app.services.captcha_solver.httpx.AsyncClient', _Factory())
+    monkeypatch.setattr('app.services.captcha_solver.asyncio.sleep', _sleep_noop)
+
+    result = asyncio.run(
+        CaptchaSolverService().solve_discord_challenge(
+            {'captcha_sitekey': 'site-key'},
+            user_agent='ua',
+        )
+    )
+
+    assert result['status'] == 'ready'
+
+    all_posts = [post for client in captured for post in client.posts]
+    create_calls = [post for post in all_posts if 'createTask' in post['url']]
+    for call in create_calls:
+        assert 'provider' not in call['json'], (
+            f"provider unexpectedly present in createTask body: {call['json']}"
+        )
+
+    get_settings.cache_clear()

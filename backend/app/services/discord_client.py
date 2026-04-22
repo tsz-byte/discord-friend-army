@@ -257,6 +257,7 @@ class DiscordClient:
                             token_id=token_id,
                             guild_id=guild_id,
                             user_agent=_USER_AGENT,
+                            proxy_url=proxy_url,
                             db=db,
                         )
                         if solve_result.get('status') == 'ready':
