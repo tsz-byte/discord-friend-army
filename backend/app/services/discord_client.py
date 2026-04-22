@@ -8,9 +8,11 @@ import re
 import httpx
 
 from app.core.config import get_settings
+from app.models.research import CaptchaChallenge
 from app.services.captcha_solver import CaptchaSolverService
 
 logger = logging.getLogger('discord_research.discord_client')
+captcha_debug_logger = logging.getLogger('discord_research.captcha_solutions')
 RETRY_BASE_DELAY_SECONDS = 0.5
 RETRY_MAX_SLEEP_SECONDS = 2.0
 RETRY_JITTER_SECONDS = 0.2
@@ -206,11 +208,29 @@ class DiscordClient:
         }
         max_attempts = 5
         captcha_payload: dict = {}
+        captcha_payload_variants: list[dict] = []
+        captcha_payload_variant_index = 0
+        captcha_solve_result: dict = {}
         captcha_attempts = 0
         max_captcha_attempts = 2
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
+                    if captcha_payload:
+                        logger.info(
+                            'Discord join retry with captcha payload invite=%s token_id=%s guild_id=%s payload=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            self._pretty_json(captcha_payload),
+                        )
+                        captcha_debug_logger.info(
+                            'Discord join captcha retry payload invite=%s token_id=%s guild_id=%s payload=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            self._pretty_json(captcha_payload),
+                        )
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
                         headers=headers,
@@ -239,11 +259,43 @@ class DiscordClient:
                         return {'status': 'already_joined'}
 
                     error_payload = self._response_error_payload(resp)
+                    if captcha_payload:
+                        logger.warning(
+                            'Discord join captcha retry rejected invite=%s token_id=%s guild_id=%s status=%s response=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            resp.status_code,
+                            self._pretty_json(error_payload),
+                        )
+                        captcha_debug_logger.warning(
+                            'Discord join captcha retry rejected invite=%s token_id=%s guild_id=%s status=%s payload=%s response=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            resp.status_code,
+                            self._pretty_json(captcha_payload),
+                            self._pretty_json(error_payload),
+                        )
                     if (
                         self.captcha_solver.is_captcha_challenge(error_payload)
                         and self.captcha_solver.is_enabled
                         and captcha_attempts < max_captcha_attempts
                     ):
+                        if captcha_payload_variants and (captcha_payload_variant_index + 1) < len(captcha_payload_variants):
+                            captcha_payload_variant_index += 1
+                            captcha_payload = captcha_payload_variants[captcha_payload_variant_index]
+                            logger.info(
+                                'Discord join trying alternate captcha payload variant invite=%s token_id=%s guild_id=%s variant=%s/%s',
+                                code,
+                                token_id,
+                                guild_id,
+                                captcha_payload_variant_index + 1,
+                                len(captcha_payload_variants),
+                            )
+                            if captcha_solve_result.get('captcha_context_id_empty'):
+                                self._mark_empty_context_retry(db, captcha_solve_result.get('task_id'))
+                            continue
                         captcha_attempts += 1
                         logger.info(
                             'Discord join captcha challenge detected invite=%s token_id=%s guild_id=%s attempt=%s',
@@ -260,15 +312,33 @@ class DiscordClient:
                             proxy_url=proxy_url,
                             db=db,
                         )
+                        logger.info(
+                            'Discord join captcha solve result invite=%s token_id=%s guild_id=%s result=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            self._pretty_json(solve_result),
+                        )
+                        captcha_debug_logger.info(
+                            'Discord join solve_result invite=%s token_id=%s guild_id=%s result=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            self._pretty_json(solve_result),
+                        )
                         if solve_result.get('status') == 'ready':
-                            captcha_payload = {'captcha_key': solve_result.get('captcha_key')}
-                            if solve_result.get('captcha_rqtoken'):
-                                captcha_payload['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
-                            captcha_rqdata = solve_result.get('captcha_rqdata')
-                            if captcha_rqdata:
-                                # Some Discord challenges require rqdata to be echoed
-                                # alongside the solved token on retry.
-                                captcha_payload['captcha_rqdata'] = captcha_rqdata
+                            captcha_payload_variants = self._build_captcha_payload_variants(solve_result)
+                            captcha_payload_variant_index = 0
+                            captcha_payload = captcha_payload_variants[captcha_payload_variant_index]
+                            captcha_solve_result = solve_result
+                            if solve_result.get('captcha_context_id_empty'):
+                                logger.warning(
+                                    'Discord join solved captcha has empty contextId invite=%s token_id=%s guild_id=%s; retrying anyway',
+                                    code,
+                                    token_id,
+                                    guild_id,
+                                )
+                                self._mark_empty_context_retry(db, solve_result.get('task_id'))
                             continue
                         logger.warning(
                             'Discord join captcha solve failed invite=%s token_id=%s guild_id=%s detail=%s',
@@ -297,6 +367,47 @@ class DiscordClient:
                         await self._sleep_before_retry(attempt)
                         continue
                     return {'status': 'error', 'detail': str(exc)}
+
+    @staticmethod
+    def _build_captcha_payload_variants(solve_result: dict) -> list[dict]:
+        token_only = {'captcha_key': solve_result.get('captcha_key')}
+        if solve_result.get('captcha_rqtoken'):
+            token_only['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
+        captcha_rqdata = solve_result.get('captcha_rqdata')
+        if captcha_rqdata:
+            token_only['captcha_rqdata'] = captcha_rqdata
+
+        enriched = dict(token_only)
+        if solve_result.get('captcha_context_id') is not None:
+            enriched['captcha_context_id'] = solve_result.get('captcha_context_id')
+        if solve_result.get('captcha_ua'):
+            enriched['captcha_ua'] = solve_result.get('captcha_ua')
+        if solve_result.get('captcha_lang'):
+            enriched['captcha_lang'] = solve_result.get('captcha_lang')
+
+        if enriched == token_only:
+            return [token_only]
+        return [token_only, enriched]
+
+    @staticmethod
+    def _mark_empty_context_retry(db, task_id: str | None) -> None:
+        if db is None or not task_id:
+            return
+        try:
+            row = db.query(CaptchaChallenge).filter(CaptchaChallenge.task_id == str(task_id)).first()
+            if row is None:
+                return
+            row.retried_with_empty_context = True
+            db.commit()
+        except Exception as exc:  # pragma: no cover
+            logger.warning('Failed to mark retried_with_empty_context task_id=%s: %s', task_id, exc)
+
+    @staticmethod
+    def _pretty_json(payload: object) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str)
+        except TypeError:
+            return str(payload)
 
     async def send_message(
         self,

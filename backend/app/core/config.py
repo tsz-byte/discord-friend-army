@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     captcha_ssl_verify: bool = Field(default=True)
     # Optional path to a custom CA bundle file.
     captcha_ca_bundle_path: str = Field(default='')
+    # If true, reject solved captchas where solution.raw.contextId is empty.
+    captcha_require_context_id: bool = Field(default=False)
 
     analytics_cache_ttl_seconds: int = Field(default=300)
     anonymization_salt: str = Field(default='change-me')

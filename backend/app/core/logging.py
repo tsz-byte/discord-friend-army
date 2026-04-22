@@ -55,3 +55,20 @@ def configure_logging() -> None:
     error_file_handler.setFormatter(JsonFormatter())
 
     root.handlers = [stream_handler, app_file_handler, error_file_handler]
+
+    # --- Dedicated captcha diagnostics log ---
+    logs_dir = _PROJECT_ROOT / 'logs'
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    captcha_log_handler = logging.handlers.RotatingFileHandler(
+        str(logs_dir / 'captcha_solutions.log'),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding='utf-8',
+    )
+    captcha_log_handler.setLevel(logging.INFO)
+    captcha_log_handler.setFormatter(JsonFormatter())
+
+    captcha_logger = logging.getLogger('discord_research.captcha_solutions')
+    captcha_logger.setLevel(logging.INFO)
+    captcha_logger.handlers = [captcha_log_handler]
+    captcha_logger.propagate = False
