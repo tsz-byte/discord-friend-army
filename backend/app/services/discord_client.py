@@ -245,9 +245,8 @@ class DiscordClient:
             for attempt in range(1, max_attempts + 1):
                 try:
                     # Always include session_id; merge captcha fields on top when present.
-                    body: dict = {'session_id': session_id}
+                    body: dict = {'session_id': session_id, **captcha_payload}
                     if captcha_payload:
-                        body.update(captcha_payload)
                         logger.info(
                             'Discord join retry with captcha payload invite=%s token_id=%s guild_id=%s payload=%s',
                             code,
@@ -465,7 +464,7 @@ class DiscordClient:
             ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
             filename = f'join_failure_{ts}_invite_{invite_code}_token_{token_id}.json'
             # Sanitise: never write the Authorization header to disk.
-            safe_req_body = {k: v for k, v in request_body.items() if k.lower() not in ('authorization',)}
+            safe_req_body = {k: v for k, v in request_body.items() if k.lower() != 'authorization'}
             record = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'invite_code': invite_code,
