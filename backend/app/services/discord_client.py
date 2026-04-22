@@ -214,9 +214,11 @@ class DiscordClient:
         if not code:
             return {'status': 'failed', 'code': 400, 'detail': 'Invalid invite code format'}
 
+        invite_metadata = await self._fetch_invite_metadata(code=code, token=token, proxy_url=proxy_url)
+
         # Generate a random session_id per join attempt, mimicking the Discord
         # web client which links HTTP invite calls to its WebSocket gateway session.
-        session_id = secrets.token_hex(16)
+        session_id = str(invite_metadata.get('captcha_session_id') or secrets.token_hex(16))
 
         headers = {
             'Authorization': token,
@@ -261,9 +263,12 @@ class DiscordClient:
                             guild_id,
                             self._pretty_json(captcha_payload),
                         )
+                    request_headers = dict(headers)
+                    if captcha_payload.get('captcha_key'):
+                        request_headers['X-Captcha-Key'] = str(captcha_payload['captcha_key'])
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
-                        headers=headers,
+                        headers=request_headers,
                         json=body,
                     )
                     if resp.status_code in (200, 201):
@@ -307,8 +312,10 @@ class DiscordClient:
                             self._pretty_json(captcha_payload),
                             self._pretty_json(error_payload),
                         )
+                    challenge_payload = dict(invite_metadata) if self.captcha_solver.is_captcha_challenge(invite_metadata) else {}
+                    challenge_payload.update(error_payload)
                     if (
-                        self.captcha_solver.is_captcha_challenge(error_payload)
+                        self.captcha_solver.is_captcha_challenge(challenge_payload)
                         and self.captcha_solver.is_enabled
                         and captcha_attempts < max_captcha_attempts
                     ):
@@ -335,7 +342,7 @@ class DiscordClient:
                             captcha_attempts,
                         )
                         solve_result = await self.captcha_solver.solve_discord_challenge(
-                            error_payload,
+                            challenge_payload,
                             token_id=token_id,
                             guild_id=guild_id,
                             user_agent=self._user_agent,
@@ -411,7 +418,40 @@ class DiscordClient:
         captcha_rqdata = solve_result.get('captcha_rqdata')
         if captcha_rqdata:
             payload['captcha_rqdata'] = captcha_rqdata
+        if solve_result.get('captcha_session_id'):
+            payload['captcha_session_id'] = solve_result.get('captcha_session_id')
         return [payload]
+
+    async def _fetch_invite_metadata(self, code: str, token: str, proxy_url: str | None = None) -> dict:
+        """Fetch invite metadata similarly to the Discord web-client preflight."""
+        headers = {
+            'Authorization': token,
+            'X-Super-Properties': self._super_properties,
+            'X-Discord-Locale': 'en-US',
+            'X-Discord-Timezone': 'America/New_York',
+            'User-Agent': self._user_agent,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': f'https://discord.com/invite/{code}',
+        }
+        params = {
+            'with_counts': 'true',
+            'with_expiration': 'true',
+            'with_permissions': 'true',
+        }
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(f'{self.base_url}/invites/{code}', headers=headers, params=params)
+                if resp.status_code == 200:
+                    return self._response_error_payload(resp)
+                logger.debug(
+                    'invite preflight metadata unavailable invite=%s status=%s',
+                    code,
+                    resp.status_code,
+                )
+            except httpx.HTTPError as exc:
+                logger.debug('invite preflight metadata request failed invite=%s error=%s', code, exc)
+        return {}
 
     @staticmethod
     def _mark_empty_context_retry(db, task_id: str | None) -> None:

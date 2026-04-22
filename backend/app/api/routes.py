@@ -323,12 +323,13 @@ async def send_message_from_token(
         token=row.token_value,
         proxy_url=proxy_url,
     )
-    if result.get('code') in (401, 403):
+    should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+    if should_mark_invalid:
         token_manager.mark_unhealthy(
             db,
             row,
             status='invalid',
-            deactivate=result.get('code') == 401,
+            deactivate=should_deactivate,
         )
     row.usage_count = (row.usage_count or 0) + 1
     db.commit()
@@ -1171,12 +1172,13 @@ async def join_server_with_onboarding(
             guild_id=guild_id,
             db=db,
         )
-        if result.get('code') in (401, 403):
+        should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+        if should_mark_invalid:
             token_manager.mark_unhealthy(
                 db,
                 token_row,
                 status='invalid',
-                deactivate=result.get('code') == 401,
+                deactivate=should_deactivate,
             )
         results.append({'token_id': token_row.id, 'label': token_row.label, **result})
         log_event(

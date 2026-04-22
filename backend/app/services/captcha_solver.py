@@ -188,6 +188,7 @@ class CaptchaSolverService:
                 'captcha_key': result.get('captcha_key'),
                 'captcha_rqtoken': result.get('captcha_rqtoken'),
                 'captcha_rqdata': result.get('captcha_rqdata'),
+                'captcha_session_id': result.get('captcha_session_id'),
                 'captcha_solution_raw': result.get('captcha_solution_raw'),
                 'captcha_context_id': result.get('captcha_context_id'),
                 'captcha_context_id_empty': result.get('captcha_context_id_empty'),
@@ -219,6 +220,7 @@ class CaptchaSolverService:
         sitekey = str(challenge_payload.get('captcha_sitekey') or '')
         rqdata = challenge_payload.get('captcha_rqdata')
         existing_rqtoken = challenge_payload.get('captcha_rqtoken')
+        captcha_session_id = challenge_payload.get('captcha_session_id')
         website_url = str(challenge_payload.get('captcha_website_url') or 'https://discord.com')
 
         # Fallback proxy logic if none is provided
@@ -307,6 +309,7 @@ class CaptchaSolverService:
             'captcha_key': token,
             'captcha_rqtoken': rqtoken,
             'captcha_rqdata': str(rqdata) if rqdata is not None else None,
+            'captcha_session_id': str(captcha_session_id) if captcha_session_id is not None else None,
             'captcha_solution_raw': analysis.get('raw') or {},
             'captcha_context_id': analysis.get('context_id'),
             'captcha_context_id_empty': analysis.get('context_id_empty'),

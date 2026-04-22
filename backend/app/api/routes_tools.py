@@ -214,12 +214,13 @@ async def server_joiner_join(request: ServerJoinRequest, db: Session = Depends(g
             guild_id=request.guild_id,
             db=db,
         )
-        if result.get('code') in (401, 403):
+        should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+        if should_mark_invalid:
             token_manager.mark_unhealthy(
                 db,
                 current_token,
                 status='invalid',
-                deactivate=result.get('code') == 401,
+                deactivate=should_deactivate,
             )
         row = ServerJoinHistory(
             token_id=current_token.id,
@@ -274,12 +275,13 @@ async def server_joiner_bulk_join(request: ServerBulkJoinRequest, db: Session = 
                 guild_id=None,
                 db=db,
             )
-            if result.get('code') in (401, 403):
+            should_mark_invalid, should_deactivate = token_manager.should_mark_invalid_from_result(result)
+            if should_mark_invalid:
                 token_manager.mark_unhealthy(
                     db,
                     token_row,
                     status='invalid',
-                    deactivate=result.get('code') == 401,
+                    deactivate=should_deactivate,
                 )
             history = ServerJoinHistory(
                 token_id=token_row.id,

@@ -21,6 +21,7 @@ class _FakeResponse:
 class _JoinAsyncClient:
     def __init__(self, *args, **kwargs):
         self.posts = []
+        self.gets = []
         self._responses = [
             _FakeResponse(
                 400,
@@ -39,14 +40,19 @@ class _JoinAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+    async def get(self, url, headers=None, params=None):
+        self.gets.append((url, params))
+        return _FakeResponse(200, {})
+
     async def post(self, url, headers=None, json=None):
-        self.posts.append((url, json))
+        self.posts.append((url, headers, json))
         return self._responses.pop(0)
 
 
 class _JoinTwoCaptchaAsyncClient:
     def __init__(self, *args, **kwargs):
         self.posts = []
+        self.gets = []
         self._responses = [
             _FakeResponse(
                 400,
@@ -73,14 +79,19 @@ class _JoinTwoCaptchaAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+    async def get(self, url, headers=None, params=None):
+        self.gets.append((url, params))
+        return _FakeResponse(200, {})
+
     async def post(self, url, headers=None, json=None):
-        self.posts.append((url, json))
+        self.posts.append((url, headers, json))
         return self._responses.pop(0)
 
 
 class _JoinNoCaptchaAsyncClient:
     def __init__(self, *args, **kwargs):
         self.posts = []
+        self.gets = []
         self._responses = [
             _FakeResponse(
                 400,
@@ -97,8 +108,12 @@ class _JoinNoCaptchaAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+    async def get(self, url, headers=None, params=None):
+        self.gets.append((url, params))
+        return _FakeResponse(200, {})
+
     async def post(self, url, headers=None, json=None):
-        self.posts.append((url, json))
+        self.posts.append((url, headers, json))
         return self._responses.pop(0)
 
 
@@ -169,6 +184,7 @@ def test_join_uses_captcha_solution(monkeypatch):
                 'captcha_key': 'solved',
                 'captcha_rqtoken': 'rq',
                 'captcha_rqdata': 'rq-data',
+                'captcha_session_id': 'captcha-session-1',
             }
 
     client.captcha_solver = _Solver()
@@ -180,9 +196,17 @@ def test_join_uses_captcha_solution(monkeypatch):
     )
 
     assert result['status'] == 'joined'
-    assert fake_client.posts[1][1]['captcha_key'] == 'solved'
-    assert fake_client.posts[1][1]['captcha_rqtoken'] == 'rq'
-    assert fake_client.posts[1][1]['captcha_rqdata'] == 'rq-data'
+    assert fake_client.gets, 'Expected invite preflight GET call'
+    assert fake_client.gets[0][1] == {
+        'with_counts': 'true',
+        'with_expiration': 'true',
+        'with_permissions': 'true',
+    }
+    assert fake_client.posts[1][2]['captcha_key'] == 'solved'
+    assert fake_client.posts[1][2]['captcha_rqtoken'] == 'rq'
+    assert fake_client.posts[1][2]['captcha_rqdata'] == 'rq-data'
+    assert fake_client.posts[1][2]['captcha_session_id'] == 'captcha-session-1'
+    assert fake_client.posts[1][1]['X-Captcha-Key'] == 'solved'
 
 
 def test_join_retries_captcha_solve_on_second_challenge(monkeypatch):
@@ -238,9 +262,10 @@ def test_join_retries_captcha_solve_on_second_challenge(monkeypatch):
     assert result['status'] == 'joined'
     # Each retry body includes the captcha fields plus a session_id; check only
     # that the captcha keys are present and correct (session_id is randomly generated).
-    for post_payload in (fake_client.posts[1][1], fake_client.posts[2][1]):
+    for _, post_headers, post_payload in (fake_client.posts[1], fake_client.posts[2]):
         for key, val in expected_payload.items():
             assert post_payload.get(key) == val
+        assert post_headers.get('X-Captcha-Key') == 'solved'
 
 
 def test_join_uses_captcha_solver_only_for_captcha_challenges(monkeypatch):

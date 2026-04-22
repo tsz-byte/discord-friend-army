@@ -17,6 +17,8 @@ MIN_TOKEN_LENGTH = 20  # Shortest plausible Discord user token length
 
 
 class TokenManagerService:
+    _AUTH_ERROR_CODES_INVALID_TOKEN = {40001}
+
     @staticmethod
     def build_proxy_url(host: str, port: int, username: str, password: str) -> str:
         scheme = 'http'
@@ -234,6 +236,27 @@ class TokenManagerService:
         db.commit()
         db.refresh(token)
         return token
+
+    @staticmethod
+    def should_mark_invalid_from_result(result: dict | None) -> tuple[bool, bool]:
+        """Return (should_mark_invalid, should_deactivate)."""
+        if not isinstance(result, dict):
+            return False, False
+        code = result.get('code')
+        error_code = result.get('error_code')
+        detail = str(result.get('detail') or '').lower()
+
+        if code == 401:
+            return True, True
+
+        if code == 403:
+            if error_code in TokenManagerService._AUTH_ERROR_CODES_INVALID_TOKEN:
+                return True, False
+            auth_signals = ('unauthorized', 'invalid token', 'authentication failed')
+            if any(signal in detail for signal in auth_signals):
+                return True, False
+
+        return False, False
 
     @staticmethod
     async def _sleep_before_retry(attempt: int) -> None:
