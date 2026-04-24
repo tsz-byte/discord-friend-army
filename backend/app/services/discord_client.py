@@ -298,11 +298,11 @@ class DiscordClient:
             issues.append(f'browser_version is trivial: {fp.browser_version!r}')
         if not isinstance(fp.client_identity, dict):
             issues.append('client_identity is not a dict')
-        elif not all(
-            fp.client_identity.get(k)
-            for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
-        ):
-            issues.append(f'client_identity missing required keys: {list(fp.client_identity.keys())}')
+        else:
+            _required_id_keys = ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+            _missing_keys = [k for k in _required_id_keys if not fp.client_identity.get(k)]
+            if _missing_keys:
+                issues.append(f'client_identity missing required keys: {_missing_keys}')
         if not fp.locale:
             issues.append('locale is empty')
         if not fp.fingerprint:
@@ -980,7 +980,11 @@ class DiscordClient:
                 recovery_suggestion=classification['recovery_suggestion'],
                 token_action=classification['token_action'],
                 http_status=response.status_code,
-                response_body=response.text[:2000],
+                response_body=(
+                    response.text[:2000] + '...[truncated]'
+                    if len(response.text) > 2000
+                    else response.text
+                ),
                 notes=f'guild_id={guild_id}',
             )
         except Exception as exc:  # pragma: no cover

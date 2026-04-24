@@ -84,18 +84,23 @@ async def startup_event() -> None:
     # AnySolver API key validation
     _anysolver_key = (settings.anysolver_api_key or '').strip()
     if _anysolver_key:
-        _key_preview = f'{_anysolver_key[:4]}...{_anysolver_key[-4:]}' if len(_anysolver_key) >= 8 else '****'
-        _startup_log.info('[STARTUP] AnySolver: configured (key preview=%s)', _key_preview)
-        # Attempt a lightweight connectivity check (createTask with empty key would
-        # return an API error; we just verify the host is reachable without spending
-        # money on a real solve).
+        # Build a safe preview (first 4 + last 4 chars) — never log the full key.
+        _klen = len(_anysolver_key)
+        if _klen >= 8:
+            _key_tail = _anysolver_key[-4:]
+            _key_preview = f'{"*" * 4}...{_key_tail}'
+        else:
+            _key_preview = '****'
+        _startup_log.info('[STARTUP] AnySolver: configured (key_suffix=%s)', _key_preview)
+        # Attempt a lightweight connectivity check using /getBalance — a standard
+        # AnySolver endpoint that verifies key validity without starting a solve task.
         try:
             import httpx as _httpx
             _base = (settings.anysolver_base_url or 'https://api.anysolver.com').rstrip('/')
             async with _httpx.AsyncClient(timeout=5.0) as _ac:
                 _probe = await _ac.post(
-                    f'{_base}/createTask',
-                    json={'clientKey': _anysolver_key, 'task': {'type': 'ping'}},
+                    f'{_base}/getBalance',
+                    json={'clientKey': _anysolver_key},
                 )
             _startup_log.info('[STARTUP] AnySolver connectivity check status=%s', _probe.status_code)
         except Exception as _exc:

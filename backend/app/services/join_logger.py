@@ -374,7 +374,7 @@ def _captcha_field_completeness(payload: dict) -> str:
     present = [k for k, v in fields.items() if v]
     total = len(fields)
     score = len(present)
-    grade = {4: 'complete', 3: 'partial-high', 2: 'partial-low', 1: 'minimal', 0: 'empty'}[score]
+    grade = {4: 'complete', 3: 'partial-high', 2: 'partial-low', 1: 'minimal', 0: 'empty'}.get(score, 'unknown')
     return f'{grade} ({score}/{total} fields: {present})'
 
 

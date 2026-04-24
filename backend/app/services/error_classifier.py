@@ -13,7 +13,7 @@ from typing import TypedDict
 
 
 class ErrorClassification(TypedDict):
-    error_type: str          # auth_error | rate_limit | server_error | captcha_error | timeout | network_error | other
+    error_type: str          # auth_error | rate_limit | server_error | captcha_error | network_error | bad_request | other
     severity: str            # critical | high | medium | low
     is_permanent: bool       # True → mark token invalid; False → may recover
     is_recoverable: bool     # True → retry is worthwhile
