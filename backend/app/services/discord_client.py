@@ -278,7 +278,7 @@ class DiscordClient:
 
     async def get_guild_onboarding(self, guild_id: str, token: str) -> dict:
         """Return the onboarding config for a guild, using a user token."""
-        headers = {'Authorization': token}
+        headers = self._discord_headers(token)
         async with httpx.AsyncClient(timeout=20) as client:
             try:
                 response = await client.get(
@@ -333,7 +333,7 @@ class DiscordClient:
             'onboarding_prompts_seen': seen_prompts,
             'onboarding_responses_seen': seen_responses,
         }
-        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        headers = self._discord_headers(token, content_type=True)
 
         max_attempts = 3
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
@@ -395,66 +395,38 @@ class DiscordClient:
         invite_metadata = await self._fetch_invite_metadata(code=code, token=token, proxy_url=proxy_url)
 
         # ------------------------------------------------------------------
-        # Build per-join browser fingerprint and client identity.
-        # ------------------------------------------------------------------
-        client_identity = {
-            k: str(uuid.uuid4())
-            for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
-        }
-        fingerprint = asdict(_FINGERPRINT_GENERATOR.generate(browser='firefox', os='macos'))
-        navigator = fingerprint.get('navigator') or {}
-        user_agent = navigator.get('userAgent') or self._user_agent
-        browser_version = '0'
-        uda = navigator.get('userAgentData')
-        if uda and uda.get('brands'):
-            browser_version = str(uda['brands'][-1].get('version', '0'))
-        else:
-            m = _FIREFOX_RE.search(user_agent)
-            if m:
-                browser_version = m.group(1)
-
-        # ------------------------------------------------------------------
-        # Fetch user locale from /users/@me so x-discord-locale matches the
-        # account's actual locale setting (same as the Discord web client).
+        # Get or create the stable per-token fingerprint profile.
+        # Fetch the account's actual locale and store it in the fingerprint
+        # cache so all subsequent actions for this token use consistent
+        # browser identity headers.
         # ------------------------------------------------------------------
         locale = await self._fetch_user_locale(token=token, proxy_url=proxy_url)
-
-        super_properties = _build_fingerprint_super_properties(
-            fingerprint, browser_version, client_identity, locale=locale
-        )
+        fp = self._get_token_fingerprint(token, locale=locale)
 
         # ------------------------------------------------------------------
-        # Obtain a real WebSocket gateway session_id via the Discord gateway.
-        # Falls back to a random hex id if the connection times out.
+        # Obtain a real WebSocket gateway session_id via the Discord gateway,
+        # passing the same fingerprint so IDENTIFY matches the HTTP headers.
+        # Falls back to a random session_id if the connection times out.
         # ------------------------------------------------------------------
         session_id = await self._acquire_gateway_session_id(
             token=token,
             proxy_url=proxy_url,
             timeout=self._gateway_session_timeout,
+            fp=fp,
         )
         if session_id is None:
-            # Graceful fallback: use invite captcha_session_id or random hex.
             session_id = str(invite_metadata.get('captcha_session_id') or secrets.token_hex(16))
             logger.info(
                 'Discord join using fallback session_id invite=%s token_id=%s', code, token_id
             )
 
         headers = {
-            'Authorization': token,
-            'Content-Type': 'application/json',
-            'X-Context-Properties': _CONTEXT_PROPERTIES,
-            'X-Super-Properties': super_properties,
-            'X-Discord-Locale': locale,
-            'X-Discord-Timezone': 'America/New_York',
-            'x-debug-options': 'bugReporterEnabled',
-            'User-Agent': user_agent,
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Origin': 'https://discord.com',
-            'Referer': f'https://discord.com/invite/{code}',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
+            **self._discord_headers(
+                token,
+                content_type=True,
+                referer=f'https://discord.com/invite/{code}',
+                context_properties=_CONTEXT_PROPERTIES,
+            ),
         }
         max_attempts = 5
         captcha_payload: dict = {}
@@ -565,7 +537,7 @@ class DiscordClient:
                             challenge_payload,
                             token_id=token_id,
                             guild_id=guild_id,
-                            user_agent=self._user_agent,
+                            user_agent=fp.user_agent,
                             proxy_url=proxy_url,
                             db=db,
                         )
@@ -659,14 +631,16 @@ class DiscordClient:
         token: str,
         proxy_url: str | None = None,
         timeout: float = 20.0,
+        fp: '_TokenFP | None' = None,
     ) -> str | None:
-        """Connect to the Discord WebSocket gateway and return the real session_id.
-
-        Returns ``None`` if the connection fails or times out so the caller can
-        fall back to a random session_id.
-        """
         try:
-            async with GatewaySession(token=token, proxy=proxy_url) as gw:
+            gw_kwargs: dict = {'token': token, 'proxy': proxy_url}
+            if fp is not None:
+                gw_kwargs['user_agent'] = fp.user_agent
+                gw_kwargs['browser_version'] = fp.browser_version
+                gw_kwargs['client_identity'] = fp.client_identity
+                gw_kwargs['locale'] = fp.locale
+            async with GatewaySession(**gw_kwargs) as gw:
                 ready = await gw.wait_for_ready(timeout=timeout)
                 if ready and gw.session_id:
                     logger.debug('GatewaySession session_id acquired for token_id (gateway)')
@@ -677,16 +651,7 @@ class DiscordClient:
 
     async def _fetch_invite_metadata(self, code: str, token: str, proxy_url: str | None = None) -> dict:
         """Fetch invite metadata similarly to the Discord web-client preflight."""
-        headers = {
-            'Authorization': token,
-            'X-Super-Properties': self._super_properties,
-            'X-Discord-Locale': 'en-US',
-            'X-Discord-Timezone': 'America/New_York',
-            'User-Agent': self._user_agent,
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': f'https://discord.com/invite/{code}',
-        }
+        headers = self._discord_headers(token, referer=f'https://discord.com/invite/{code}')
         params = {
             'with_counts': 'true',
             'with_expiration': 'true',
@@ -782,7 +747,7 @@ class DiscordClient:
         proxy_url: str | None = None,
     ) -> dict:
         """Send a message to a Discord channel using a user token."""
-        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        headers = self._discord_headers(token, content_type=True)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             max_attempts = 4
             for attempt in range(1, max_attempts + 1):
@@ -790,7 +755,13 @@ class DiscordClient:
                     resp = await client.post(
                         f'{self.base_url}/channels/{channel_id}/messages',
                         headers=headers,
-                        json={'content': content},
+                        json={
+                            'content': content,
+                            'nonce': _generate_nonce(),
+                            'tts': False,
+                            'flags': 0,
+                            'mobile_network_type': 'unknown',
+                        },
                     )
                     if resp.status_code in (200, 201):
                         return {'status': 'sent', 'message': resp.json()}
@@ -906,7 +877,7 @@ class DiscordClient:
         Uses the /guilds/{id}/members endpoint available to user tokens.
         Returns an empty list on any error so callers can degrade gracefully.
         """
-        headers = {'Authorization': token}
+        headers = self._discord_headers(token)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.get(
@@ -944,8 +915,9 @@ class DiscordClient:
         auth_token = (token or '').strip()
         if auth_token:
             if self.runtype == 'BOTT' and not auth_token.lower().startswith('bot '):
-                auth_token = f'Bot {auth_token}'
-            headers = {'Authorization': auth_token}
+                headers = {'Authorization': f'Bot {auth_token}'}
+            else:
+                headers = self._discord_headers(auth_token)
         elif self.token:
             headers = {'Authorization': f'Bot {self.token}'}
         else:
@@ -976,7 +948,7 @@ class DiscordClient:
 
     async def validate_guild_access(self, guild_id: str, token: str, proxy_url: str | None = None) -> dict:
         """Validate that a token can access guild channels after joining."""
-        headers = {'Authorization': token}
+        headers = self._discord_headers(token)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.get(f'{self.base_url}/guilds/{guild_id}/channels', headers=headers)
@@ -995,7 +967,7 @@ class DiscordClient:
                 return {'status': 'error', 'detail': str(exc)}
 
     async def patch_user_clan_tag(self, token: str, clan_tag: str | None, proxy_url: str | None = None) -> dict:
-        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        headers = self._discord_headers(token, content_type=True)
         payload = {'clan': clan_tag}
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
@@ -1014,7 +986,7 @@ class DiscordClient:
         token: str,
         proxy_url: str | None = None,
     ) -> dict:
-        headers = {'Authorization': token, 'Content-Type': 'application/json'}
+        headers = self._discord_headers(token, content_type=True)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.patch(
@@ -1029,12 +1001,153 @@ class DiscordClient:
                 return {'status': 'error', 'detail': str(exc)}
 
     async def trigger_typing(self, channel_id: str, token: str, proxy_url: str | None = None) -> dict:
-        headers = {'Authorization': token}
+        headers = self._discord_headers(token)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.post(f'{self.base_url}/channels/{channel_id}/typing', headers=headers)
                 if resp.status_code in (200, 204):
                     return {'status': 'ok'}
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def add_friend(
+        self,
+        user_id: str,
+        token: str,
+        proxy_url: str | None = None,
+        token_id: int | None = None,
+        guild_id: str | None = None,
+        db=None,
+    ) -> dict:
+        """Send a friend request to a user, retrying with AnySolver if captcha is required.
+
+        Based on docs/Joiner/lib/actions/relationship/add.py.
+        """
+        context = base64.b64encode(b'{"location":"User Profile"}').decode()
+        headers = self._discord_headers(
+            token,
+            content_type=True,
+            context_properties=context,
+        )
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.put(
+                    f'{self.base_url}/users/@me/relationships/{user_id}',
+                    headers=headers,
+                    json={},
+                )
+                if resp.status_code == 204:
+                    return {'status': 'sent'}
+                if resp.status_code in (401, 403):
+                    payload = self._response_error_payload(resp)
+                    return {
+                        'status': 'failed',
+                        'code': resp.status_code,
+                        'error_code': payload.get('code'),
+                        'detail': payload.get('message', resp.text[:200]),
+                    }
+                error_payload = self._response_error_payload(resp)
+                if self.captcha_solver.is_captcha_challenge(error_payload) and self.captcha_solver.is_enabled:
+                    fp = self._get_token_fingerprint(token)
+                    solve_result = await self.captcha_solver.solve_discord_challenge(
+                        error_payload,
+                        token_id=token_id,
+                        guild_id=guild_id,
+                        user_agent=fp.user_agent,
+                        proxy_url=proxy_url,
+                        db=db,
+                    )
+                    if solve_result.get('status') == 'ready':
+                        captcha_headers = dict(headers)
+                        captcha_headers['X-Captcha-Key'] = str(solve_result['captcha_key'])
+                        captcha_payload: dict = {}
+                        if solve_result.get('captcha_rqtoken'):
+                            captcha_payload['captcha_rqtoken'] = solve_result['captcha_rqtoken']
+                        if solve_result.get('captcha_rqdata'):
+                            captcha_payload['captcha_rqdata'] = solve_result['captcha_rqdata']
+                        retry = await client.put(
+                            f'{self.base_url}/users/@me/relationships/{user_id}',
+                            headers=captcha_headers,
+                            json=captcha_payload or {},
+                        )
+                        if retry.status_code == 204:
+                            return {'status': 'sent'}
+                        retry_payload = self._response_error_payload(retry)
+                        return {
+                            'status': 'failed',
+                            'code': retry.status_code,
+                            'detail': json.dumps(retry_payload, ensure_ascii=False),
+                        }
+                    return {
+                        'status': 'failed',
+                        'code': resp.status_code,
+                        'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown')}",
+                    }
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def open_dm_channel(
+        self,
+        user_id: str,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> dict:
+        """Open a DM channel with a user.
+
+        Based on docs/Joiner/lib/actions/relationship/open_dm.py.
+        """
+        headers = self._discord_headers(token, content_type=True)
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.post(
+                    f'{self.base_url}/users/@me/channels',
+                    headers=headers,
+                    json={'recipient_id': user_id},
+                )
+                if resp.status_code in (200, 201):
+                    return {'status': 'ok', 'channel': resp.json()}
+                if resp.status_code in (401, 403):
+                    payload = self._response_error_payload(resp)
+                    return {
+                        'status': 'failed',
+                        'code': resp.status_code,
+                        'error_code': payload.get('code'),
+                        'detail': payload.get('message', resp.text[:200]),
+                    }
+                return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def leave_guild(
+        self,
+        guild_id: str,
+        token: str,
+        proxy_url: str | None = None,
+    ) -> dict:
+        """Leave a guild.
+
+        Based on docs/Joiner/lib/actions/guild/leave.py.
+        """
+        headers = self._discord_headers(token, content_type=True)
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                resp = await client.delete(
+                    f'{self.base_url}/users/@me/guilds/{guild_id}',
+                    headers=headers,
+                    json={'lurking': False},
+                )
+                if resp.status_code in (200, 204):
+                    return {'status': 'left'}
+                if resp.status_code in (401, 403):
+                    payload = self._response_error_payload(resp)
+                    return {
+                        'status': 'failed',
+                        'code': resp.status_code,
+                        'error_code': payload.get('code'),
+                        'detail': payload.get('message', resp.text[:200]),
+                    }
                 return {'status': 'failed', 'code': resp.status_code, 'detail': resp.text[:200]}
             except httpx.HTTPError as exc:
                 return {'status': 'error', 'detail': str(exc)}

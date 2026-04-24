@@ -49,7 +49,15 @@ class GatewaySession:
         Optional proxy URL in the format ``http://user:pass@host:port``.
     """
 
-    def __init__(self, token: str, proxy: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str,
+        proxy: str | None = None,
+        user_agent: str | None = None,
+        browser_version: str | None = None,
+        client_identity: dict | None = None,
+        locale: str = 'en-US',
+    ) -> None:
         self.token = token
         self.proxy = proxy
 
@@ -67,32 +75,40 @@ class GatewaySession:
         self._heartbeat_task: asyncio.Task | None = None
         self._handle_task: asyncio.Task | None = None
 
-        # Generate per-session identity UUIDs as required by the Discord client.
-        self._client_identity: dict[str, str] = {
-            k: str(uuid.uuid4())
-            for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
-        }
-
-        # Generate a realistic browser fingerprint for this session.
-        fingerprint = asdict(_FINGERPRINT_GENERATOR.generate(browser='firefox', os='macos'))
-        navigator = fingerprint.get('navigator') or {}
-        self._user_agent: str = navigator.get('userAgent') or ''
-        browser_version = '0'
-        uda = navigator.get('userAgentData')
-        if uda and uda.get('brands'):
-            browser_version = str(uda['brands'][-1].get('version', '0'))
+        # Use caller-supplied fingerprint values when provided (so the IDENTIFY
+        # payload matches the HTTP headers for the same token), otherwise
+        # generate a fresh fingerprint for this session.
+        if user_agent is not None:
+            self._user_agent: str = user_agent
+            _browser_version = browser_version or '0'
+            self._client_identity: dict[str, str] = client_identity or {
+                k: str(uuid.uuid4())
+                for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+            }
         else:
-            m = _FIREFOX_RE.search(self._user_agent)
-            if m:
-                browser_version = m.group(1)
+            fingerprint = asdict(_FINGERPRINT_GENERATOR.generate(browser='firefox', os='macos'))
+            navigator = fingerprint.get('navigator') or {}
+            self._user_agent = navigator.get('userAgent') or ''
+            _browser_version = '0'
+            uda = navigator.get('userAgentData')
+            if uda and uda.get('brands'):
+                _browser_version = str(uda['brands'][-1].get('version', '0'))
+            else:
+                m = _FIREFOX_RE.search(self._user_agent)
+                if m:
+                    _browser_version = m.group(1)
+            self._client_identity = {
+                k: str(uuid.uuid4())
+                for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+            }
 
         self._properties: dict = {
             'os': 'macos',
             'browser': 'firefox',
             'device': '',
-            'system_locale': 'en-US',
+            'system_locale': locale,
             'browser_user_agent': self._user_agent,
-            'browser_version': browser_version,
+            'browser_version': _browser_version,
             'os_version': '10',
             'referrer': '',
             'referring_domain': '',

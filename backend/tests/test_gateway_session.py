@@ -208,7 +208,7 @@ def test_build_fingerprint_super_properties_structure():
 def test_acquire_gateway_session_id_returns_session_id(monkeypatch):
     """_acquire_gateway_session_id should return the GatewaySession session_id."""
 
-    async def _fake_acquire(self, token, proxy_url=None, timeout=20.0):
+    async def _fake_acquire(self, token, proxy_url=None, timeout=20.0, **kwargs):
         return 'gateway-session-from-ws'
 
     client = DiscordClient()
@@ -417,3 +417,254 @@ def test_join_uses_fingerprint_super_properties(monkeypatch):
     # Fingerprint-based super-properties always use 'firefox' browser profile.
     assert sp['browser'] == 'firefox'
     assert sp['os'] == 'macos'
+
+
+def test_token_fingerprint_is_consistent():
+    """Same token always returns the same fingerprint object."""
+    import app.services.discord_client as dc_module
+    dc_module._TOKEN_FP_CACHE.clear()
+    client = dc_module.DiscordClient()
+    fp1 = client._get_token_fingerprint('stable-token')
+    fp2 = client._get_token_fingerprint('stable-token')
+    assert fp1 is fp2
+
+
+def test_different_tokens_get_different_fingerprints():
+    """Different tokens get independent fingerprint instances."""
+    import app.services.discord_client as dc_module
+    dc_module._TOKEN_FP_CACHE.clear()
+    client = dc_module.DiscordClient()
+    fp_a = client._get_token_fingerprint('token-aaa')
+    fp_b = client._get_token_fingerprint('token-bbb')
+    assert fp_a is not fp_b
+
+
+def test_locale_is_updated_in_cached_fingerprint():
+    """Passing a non-default locale updates the cached fingerprint in place."""
+    import app.services.discord_client as dc_module
+    dc_module._TOKEN_FP_CACHE.clear()
+    client = dc_module.DiscordClient()
+    client._get_token_fingerprint('tok-locale')
+    fp = client._get_token_fingerprint('tok-locale', locale='de')
+    assert fp.locale == 'de'
+    # Second call with same locale returns same object.
+    assert client._get_token_fingerprint('tok-locale', locale='de') is fp
+
+
+def test_discord_headers_contains_required_fields():
+    """_discord_headers returns all mandatory Discord HTTP header fields."""
+    import app.services.discord_client as dc_module
+    dc_module._TOKEN_FP_CACHE.clear()
+    client = dc_module.DiscordClient()
+    headers = client._discord_headers('my-token')
+    assert headers['Authorization'] == 'my-token'
+    assert 'User-Agent' in headers
+    assert 'X-Super-Properties' in headers
+    assert headers['X-Discord-Locale'] == 'en-US'
+    assert headers['x-debug-options'] == 'bugReporterEnabled'
+    assert headers['Origin'] == 'https://discord.com'
+    assert 'X-Discord-Timezone' in headers
+    assert 'Content-Type' not in headers  # not requested
+
+
+def test_discord_headers_content_type_flag():
+    """content_type=True adds Content-Type: application/json."""
+    import app.services.discord_client as dc_module
+    client = dc_module.DiscordClient()
+    headers = client._discord_headers('tok', content_type=True)
+    assert headers.get('Content-Type') == 'application/json'
+
+
+def test_discord_headers_referer_and_context():
+    """Referer and X-Context-Properties are included when provided."""
+    import app.services.discord_client as dc_module
+    client = dc_module.DiscordClient()
+    headers = client._discord_headers(
+        'tok',
+        referer='https://discord.com/invite/abc',
+        context_properties='dGVzdA==',
+    )
+    assert headers['Referer'] == 'https://discord.com/invite/abc'
+    assert headers['X-Context-Properties'] == 'dGVzdA=='
+
+
+def test_discord_headers_locale_in_accept_language():
+    """Non-default locale appears in Accept-Language."""
+    import app.services.discord_client as dc_module
+    dc_module._TOKEN_FP_CACHE.clear()
+    client = dc_module.DiscordClient()
+    client._get_token_fingerprint('tok-lang', locale='pt-BR')
+    headers = client._discord_headers('tok-lang')
+    assert headers['X-Discord-Locale'] == 'pt-BR'
+    assert 'pt-BR' in headers['Accept-Language']
+
+
+def test_gateway_session_uses_provided_fingerprint():
+    """GatewaySession stores the provided user_agent and browser_version."""
+    import asyncio
+    from app.services.gateway_session import GatewaySession
+    gw = GatewaySession(
+        token='gw-tok',
+        user_agent='Mozilla/5.0 TestBrowser/1.0',
+        browser_version='1.0',
+        client_identity={
+            'client_launch_id': 'lid',
+            'launch_signature': 'sig',
+            'client_heartbeat_session_id': 'hb',
+        },
+        locale='fr',
+    )
+    assert gw._user_agent == 'Mozilla/5.0 TestBrowser/1.0'
+    assert gw._properties['browser_version'] == '1.0'
+    assert gw._properties['system_locale'] == 'fr'
+    assert gw._client_identity['client_launch_id'] == 'lid'
+
+
+def test_send_message_includes_nonce_and_fingerprint_headers(monkeypatch):
+    """send_message posts a body with nonce and uses fingerprint headers."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    class _FakePost:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def post(self, url, headers=None, json=None):
+            self.last_headers = headers
+            self.last_json = json
+            r = type('R', (), {})()
+            r.status_code = 200
+            r.text = '{}'
+            r.json = lambda: {'id': 'm1'}
+            r.content = b'{}'
+            r.headers = {}
+            return r
+
+    fake = _FakePost()
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: fake)
+    client = dc_module.DiscordClient()
+    result = asyncio.run(client.send_message('ch1', 'hello', 'tok'))
+    assert result['status'] == 'sent'
+    assert 'nonce' in fake.last_json
+    assert fake.last_json['mobile_network_type'] == 'unknown'
+    assert fake.last_headers.get('User-Agent') is not None
+    assert fake.last_headers.get('x-debug-options') == 'bugReporterEnabled'
+
+
+def test_add_friend_sends_put_request(monkeypatch):
+    """add_friend issues a PUT to /users/@me/relationships/{user_id}."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    class _FakePut:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def put(self, url, headers=None, json=None):
+            self.last_url = url
+            self.last_headers = headers
+            r = type('R', (), {})()
+            r.status_code = 204
+            r.text = ''
+            r.json = lambda: {}
+            r.headers = {}
+            return r
+
+    fake = _FakePut()
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: fake)
+    client = dc_module.DiscordClient()
+    result = asyncio.run(client.add_friend('user-123', 'tok-add'))
+    assert result['status'] == 'sent'
+    assert 'relationships/user-123' in fake.last_url
+    assert fake.last_headers.get('x-debug-options') == 'bugReporterEnabled'
+
+
+def test_add_friend_uses_anysolver_on_captcha(monkeypatch):
+    """add_friend calls AnySolver and retries the PUT when captcha is required."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    responses = [
+        {'status_code': 400, 'payload': {'captcha_sitekey': 'sk', 'captcha_rqdata': 'rq', 'captcha_rqtoken': 'rqt'}},
+        {'status_code': 204, 'payload': {}},
+    ]
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def put(self, url, headers=None, json=None):
+            resp_data = responses.pop(0)
+            r = type('R', (), {})()
+            r.status_code = resp_data['status_code']
+            r.text = str(resp_data['payload'])
+            r.json = lambda: resp_data['payload']
+            r.headers = {}
+            return r
+
+    class _Solver:
+        is_enabled = True
+        @staticmethod
+        def is_captcha_challenge(p): return bool(p.get('captcha_sitekey'))
+        async def solve_discord_challenge(self, *a, **kw):
+            return {'status': 'ready', 'captcha_key': 'solved-key', 'captcha_rqtoken': 'rqt2', 'captcha_rqdata': 'rq2'}
+
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: _FakeClient())
+    client = dc_module.DiscordClient()
+    client.captcha_solver = _Solver()
+    result = asyncio.run(client.add_friend('u1', 'tok'))
+    assert result['status'] == 'sent'
+
+
+def test_open_dm_channel_posts_recipient_id(monkeypatch):
+    """open_dm_channel POSTs recipient_id to /users/@me/channels."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    class _FakePost:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def post(self, url, headers=None, json=None):
+            self.last_url = url
+            self.last_json = json
+            r = type('R', (), {})()
+            r.status_code = 200
+            r.json = lambda: {'id': 'dm-ch-1', 'type': 1}
+            r.text = '{}'
+            r.headers = {}
+            return r
+
+    fake = _FakePost()
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: fake)
+    client = dc_module.DiscordClient()
+    result = asyncio.run(client.open_dm_channel('user-456', 'tok-dm'))
+    assert result['status'] == 'ok'
+    assert 'dm-ch-1' in str(result['channel'])
+    assert fake.last_json == {'recipient_id': 'user-456'}
+
+
+def test_leave_guild_sends_delete(monkeypatch):
+    """leave_guild issues a DELETE to /users/@me/guilds/{guild_id}."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    class _FakeDelete:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def delete(self, url, headers=None, json=None):
+            self.last_url = url
+            r = type('R', (), {})()
+            r.status_code = 204
+            r.text = ''
+            r.json = lambda: {}
+            r.headers = {}
+            return r
+
+    fake = _FakeDelete()
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: fake)
+    client = dc_module.DiscordClient()
+    result = asyncio.run(client.leave_guild('guild-99', 'tok-leave'))
+    assert result['status'] == 'left'
+    assert 'guilds/guild-99' in fake.last_url
