@@ -418,7 +418,10 @@ class DiscordClient:
             fp=fp,
         )
         if session_id is None:
-            session_id = str(invite_metadata.get('captcha_session_id') or secrets.token_hex(16))
+            # Gateway session_id is authoritative; use a random hex as fallback.
+            # Do NOT use captcha_session_id from invite_metadata — that is a
+            # Discord captcha field, not a WebSocket gateway session identifier.
+            session_id = secrets.token_hex(16)
             logger.info(
                 'Discord join using fallback session_id invite=%s token_id=%s', code, token_id
             )
@@ -441,26 +444,36 @@ class DiscordClient:
         async with httpx.AsyncClient(timeout=25, proxy=proxy_url) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
-                    # Always include session_id; merge captcha fields on top when present.
-                    body: dict = {'session_id': session_id, **captcha_payload}
-                    if captcha_payload:
-                        logger.info(
-                            'Discord join retry with captcha payload invite=%s token_id=%s guild_id=%s payload=%s',
-                            code,
-                            token_id,
-                            guild_id,
-                            self._pretty_json(captcha_payload),
-                        )
-                        captcha_debug_logger.info(
-                            'Discord join captcha retry payload invite=%s token_id=%s guild_id=%s payload=%s',
-                            code,
-                            token_id,
-                            guild_id,
-                            self._pretty_json(captcha_payload),
-                        )
+                    # Body contains only session_id; captcha fields go exclusively
+                    # in HTTP headers (headers-only pattern), matching add_friend()
+                    # and send_message() implementations.
+                    body: dict = {'session_id': session_id}
                     request_headers = dict(headers)
                     if captcha_payload.get('captcha_key'):
                         request_headers['X-Captcha-Key'] = str(captcha_payload['captcha_key'])
+                        if captcha_payload.get('captcha_rqtoken'):
+                            request_headers['X-Captcha-Rqtoken'] = str(captcha_payload['captcha_rqtoken'])
+                        if captcha_payload.get('captcha_rqdata'):
+                            request_headers['X-Captcha-Rqdata'] = str(captcha_payload['captcha_rqdata'])
+                        if captcha_payload.get('captcha_session_id'):
+                            request_headers['X-Captcha-Session-Id'] = str(captcha_payload['captcha_session_id'])
+                        captcha_header_keys = [k for k in request_headers if k.startswith('X-Captcha')]
+                        logger.info(
+                            'Discord join retry with captcha headers invite=%s token_id=%s guild_id=%s headers=%s body_keys=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            captcha_header_keys,
+                            list(body.keys()),
+                        )
+                        captcha_debug_logger.info(
+                            'Discord join captcha retry headers invite=%s token_id=%s guild_id=%s captcha_headers=%s body=%s',
+                            code,
+                            token_id,
+                            guild_id,
+                            {k: v for k, v in request_headers.items() if k.startswith('X-Captcha')},
+                            self._pretty_json(body),
+                        )
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
                         headers=request_headers,
@@ -507,8 +520,12 @@ class DiscordClient:
                             self._pretty_json(captcha_payload),
                             self._pretty_json(error_payload),
                         )
-                    challenge_payload = dict(invite_metadata) if self.captcha_solver.is_captcha_challenge(invite_metadata) else {}
-                    challenge_payload.update(error_payload)
+                    challenge_payload = dict(error_payload)
+                    # Supplement with invite_metadata captcha fields not already
+                    # present in error_payload (error_payload is always primary).
+                    if self.captcha_solver.is_captcha_challenge(invite_metadata):
+                        for key, val in invite_metadata.items():
+                            challenge_payload.setdefault(key, val)
                     if (
                         self.captcha_solver.is_captcha_challenge(challenge_payload)
                         and self.captcha_solver.is_enabled
@@ -607,15 +624,46 @@ class DiscordClient:
 
     @staticmethod
     def _build_captcha_payload_variants(solve_result: dict) -> list[dict]:
-        payload: dict = {'captcha_key': solve_result.get('captcha_key')}
-        if solve_result.get('captcha_rqtoken'):
-            payload['captcha_rqtoken'] = solve_result.get('captcha_rqtoken')
+        """Build multiple captcha header-field variant dicts for retry strategies.
+
+        Returns variants ordered from most-complete to most-minimal so the retry
+        loop can fall back to simpler field combinations if the first attempt is
+        rejected by Discord.  All fields are consumed as HTTP headers only — the
+        request body is never modified.
+
+        Variant 0: All available fields (key + rqtoken + rqdata + session_id).
+        Variant 1: Without rqdata (omit when rqdata is the suspected cause).
+        Variant 2: Minimal — key + rqtoken only (last-resort fallback).
+        """
+        captcha_key = solve_result.get('captcha_key')
+        captcha_rqtoken = solve_result.get('captcha_rqtoken')
         captcha_rqdata = solve_result.get('captcha_rqdata')
+        captcha_session_id = solve_result.get('captcha_session_id')
+
+        # Variant 0: Most complete — include every available field.
+        full: dict = {'captcha_key': captcha_key}
+        if captcha_rqtoken:
+            full['captcha_rqtoken'] = captcha_rqtoken
         if captcha_rqdata:
-            payload['captcha_rqdata'] = captcha_rqdata
-        if solve_result.get('captcha_session_id'):
-            payload['captcha_session_id'] = solve_result.get('captcha_session_id')
-        return [payload]
+            full['captcha_rqdata'] = captcha_rqdata
+        if captcha_session_id:
+            full['captcha_session_id'] = captcha_session_id
+        variants: list[dict] = [full]
+
+        # Variant 1: Without rqdata.
+        if captcha_rqdata:
+            partial: dict = {'captcha_key': captcha_key}
+            if captcha_rqtoken:
+                partial['captcha_rqtoken'] = captcha_rqtoken
+            if captcha_session_id:
+                partial['captcha_session_id'] = captcha_session_id
+            variants.append(partial)
+
+        # Variant 2: Minimal — key + rqtoken only.
+        if captcha_rqtoken and (captcha_rqdata or captcha_session_id):
+            variants.append({'captcha_key': captcha_key, 'captcha_rqtoken': captcha_rqtoken})
+
+        return variants
 
     async def _fetch_user_locale(self, token: str, proxy_url: str | None = None) -> str:
         """Return the account locale from ``/users/@me``, defaulting to ``en-US``."""
