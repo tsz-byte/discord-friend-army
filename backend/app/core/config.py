@@ -52,11 +52,14 @@ class Settings(BaseSettings):
     # Chrome browser version to mimic in User-Agent and X-Super-Properties.
     discord_chrome_version: str = Field(default='136.0.0.0')
 
-    # Join failure response logging.
-    # When enabled, every failed Discord guild-join attempt writes a JSON file
-    # with the full HTTP response to join_failure_log_dir.
+    # Join attempt response logging.
+    # When enabled, every Discord guild-join attempt (success AND failure) writes
+    # a structured JSON audit file to join_failure_log_dir.
     join_failure_log_enabled: bool = Field(default=True)
-    join_failure_log_dir: str = Field(default='logs/join_failures')
+    join_failure_log_dir: str = Field(default='important_req_logs')
+    # When True, log ALL attempts including successes.
+    # When False, only log failed attempts (legacy behaviour).
+    join_log_all_attempts: bool = Field(default=True)
 
     # WebSocket gateway session for obtaining a real Discord session_id.
     # Seconds to wait for the READY event before falling back to a random session_id.
