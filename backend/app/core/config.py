@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     join_failure_log_enabled: bool = Field(default=True)
     join_failure_log_dir: str = Field(default='logs/join_failures')
 
+    # WebSocket gateway session for obtaining a real Discord session_id.
+    # Seconds to wait for the READY event before falling back to a random session_id.
+    gateway_session_timeout: float = Field(default=20.0)
+
     @model_validator(mode='after')
     def validate_runtype_and_token(self) -> 'Settings':
         runtype = (self.runtype or 'USERT').strip().upper()
