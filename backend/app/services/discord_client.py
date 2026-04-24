@@ -98,8 +98,11 @@ def _make_token_fingerprint(locale: str = 'en-US') -> _TokenFP:
 
 
 def _generate_nonce() -> str:
-    """Snowflake-based nonce matching the Discord web client (docs/Joiner send.py)."""
-    timestamp = int(time.time() * 1000) - 1420070400000
+    """Snowflake-based nonce matching the Discord web client (docs/Joiner send.py).
+
+    Discord's epoch starts at 2015-01-01 00:00:00 UTC (1420070400000 ms).
+    """
+    timestamp = int(time.time() * 1000) - 1420070400000  # ms since Discord epoch
     return str(timestamp << 22)
 
 

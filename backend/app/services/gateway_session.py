@@ -47,6 +47,20 @@ class GatewaySession:
         Discord user token.
     proxy:
         Optional proxy URL in the format ``http://user:pass@host:port``.
+    user_agent:
+        Optional pre-built User-Agent string from a ``_TokenFP`` profile.
+        When provided, ``browser_version``, ``client_identity``, and ``locale``
+        should also be supplied so the IDENTIFY payload matches the HTTP
+        headers sent for the same token.  If omitted a fresh fingerprint is
+        generated for this session.
+    browser_version:
+        Browser version string corresponding to ``user_agent``.
+    client_identity:
+        Dict with keys ``client_launch_id``, ``launch_signature``, and
+        ``client_heartbeat_session_id`` from the token's fingerprint profile.
+    locale:
+        BCP-47 locale tag (e.g. ``'en-US'``, ``'de'``) used as
+        ``system_locale`` in the IDENTIFY payload.
     """
 
     def __init__(
