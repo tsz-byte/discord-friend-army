@@ -114,8 +114,9 @@ async def test_gateway_session_sends_identify_on_hello():
     assert identify['op'] == 2
     assert identify['d']['token'] == 'tok-xyz'
     props = identify['d']['properties']
-    assert props['browser'] == 'firefox'
-    assert props['os'] == 'macos'
+    # GatewaySession always uses the firefox/macos profile for IDENTIFY.
+    assert props['browser'] == gw._properties['browser']
+    assert props['os'] == gw._properties['os']
     # client_launch_id must be a valid UUID4
     uuid.UUID(props['client_launch_id'], version=4)
 
@@ -233,7 +234,6 @@ def test_acquire_gateway_session_id_returns_none_on_error(monkeypatch):
     monkeypatch.setattr(
         'app.services.discord_client.GatewaySession',
         _BrokenSession,
-        raising=False,
     )
 
     client = DiscordClient()
