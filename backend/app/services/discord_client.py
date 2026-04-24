@@ -749,8 +749,23 @@ class DiscordClient:
         token: str,
         proxy_url: str | None = None,
     ) -> dict:
-        """Send a message to a Discord channel using a user token."""
+        """Send a message to a Discord channel using a user token.
+
+        Captcha handling follows docs/Joiner/lib/actions/misc/send.py: on a 400
+        captcha challenge, AnySolver is invoked and the retry uses the same
+        message body with captcha fields sent as HTTP headers only
+        (X-Captcha-Key / X-Captcha-Rqtoken / X-Captcha-Rqdata /
+        X-Captcha-Session-Id).  The original body is kept intact.
+        """
         headers = self._discord_headers(token, content_type=True)
+        # Body template — nonce is regenerated fresh for every send/retry
+        # attempt, matching docs/Joiner/lib/actions/misc/send.py _send().
+        body_base = {
+            'content': content,
+            'tts': False,
+            'flags': 0,
+            'mobile_network_type': 'unknown',
+        }
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             max_attempts = 4
             for attempt in range(1, max_attempts + 1):
@@ -758,13 +773,7 @@ class DiscordClient:
                     resp = await client.post(
                         f'{self.base_url}/channels/{channel_id}/messages',
                         headers=headers,
-                        json={
-                            'content': content,
-                            'nonce': _generate_nonce(),
-                            'tts': False,
-                            'flags': 0,
-                            'mobile_network_type': 'unknown',
-                        },
+                        json={**body_base, 'nonce': _generate_nonce()},
                     )
                     if resp.status_code in (200, 201):
                         return {'status': 'sent', 'message': resp.json()}
@@ -775,6 +784,47 @@ class DiscordClient:
                             'code': resp.status_code,
                             'error_code': payload.get('code'),
                             'detail': payload.get('message', resp.text[:200]),
+                        }
+                    error_payload = self._response_error_payload(resp)
+                    if (
+                        resp.status_code == 400
+                        and self.captcha_solver.is_captcha_challenge(error_payload)
+                        and self.captcha_solver.is_enabled
+                    ):
+                        fp = self._get_token_fingerprint(token)
+                        solve_result = await self.captcha_solver.solve_discord_challenge(
+                            error_payload,
+                            user_agent=fp.user_agent,
+                            proxy_url=proxy_url,
+                        )
+                        if solve_result.get('status') == 'ready':
+                            # Captcha fields go in headers; body stays intact
+                            # (mirrors _build_captcha_headers in send.py reference).
+                            captcha_headers = dict(headers)
+                            captcha_headers['X-Captcha-Key'] = str(solve_result['captcha_key'])
+                            if solve_result.get('captcha_rqtoken'):
+                                captcha_headers['X-Captcha-Rqtoken'] = str(solve_result['captcha_rqtoken'])
+                            if solve_result.get('captcha_rqdata'):
+                                captcha_headers['X-Captcha-Rqdata'] = str(solve_result['captcha_rqdata'])
+                            if error_payload.get('captcha_session_id'):
+                                captcha_headers['X-Captcha-Session-Id'] = str(error_payload['captcha_session_id'])
+                            retry_resp = await client.post(
+                                f'{self.base_url}/channels/{channel_id}/messages',
+                                headers=captcha_headers,
+                                json={**body_base, 'nonce': _generate_nonce()},
+                            )
+                            if retry_resp.status_code in (200, 201):
+                                return {'status': 'sent', 'message': retry_resp.json()}
+                            retry_err = self._response_error_payload(retry_resp)
+                            return {
+                                'status': 'failed',
+                                'code': retry_resp.status_code,
+                                'detail': json.dumps(retry_err, ensure_ascii=False),
+                            }
+                        return {
+                            'status': 'failed',
+                            'code': resp.status_code,
+                            'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown')}",
                         }
                     if resp.status_code == 429 and attempt < max_attempts:
                         await self._sleep_before_retry(attempt, retry_after_seconds=self._retry_after_seconds(resp))
@@ -917,8 +967,11 @@ class DiscordClient:
         """
         auth_token = (token or '').strip()
         if auth_token:
-            if self.runtype == 'BOTT' and not auth_token.lower().startswith('bot '):
-                headers = {'Authorization': f'Bot {auth_token}'}
+            if self.runtype == 'BOTT':
+                # Bot mode: always use plain Authorization, no fingerprint headers.
+                if not auth_token.lower().startswith('bot '):
+                    auth_token = f'Bot {auth_token}'
+                headers = {'Authorization': auth_token}
             else:
                 headers = self._discord_headers(auth_token)
         elif self.token:
@@ -1062,17 +1115,21 @@ class DiscordClient:
                         db=db,
                     )
                     if solve_result.get('status') == 'ready':
+                        # Captcha fields go in headers; body stays empty.
+                        # Mirrors add.py reference: X-Captcha-Key/Rqtoken/Rqdata/Session-Id
+                        # are all sent as headers, json={} is unchanged.
                         captcha_headers = dict(headers)
                         captcha_headers['X-Captcha-Key'] = str(solve_result['captcha_key'])
-                        captcha_payload: dict = {}
                         if solve_result.get('captcha_rqtoken'):
-                            captcha_payload['captcha_rqtoken'] = solve_result['captcha_rqtoken']
+                            captcha_headers['X-Captcha-Rqtoken'] = str(solve_result['captcha_rqtoken'])
                         if solve_result.get('captcha_rqdata'):
-                            captcha_payload['captcha_rqdata'] = solve_result['captcha_rqdata']
+                            captcha_headers['X-Captcha-Rqdata'] = str(solve_result['captcha_rqdata'])
+                        if error_payload.get('captcha_session_id'):
+                            captcha_headers['X-Captcha-Session-Id'] = str(error_payload['captcha_session_id'])
                         retry = await client.put(
                             f'{self.base_url}/users/@me/relationships/{user_id}',
                             headers=captcha_headers,
-                            json=captcha_payload or {},
+                            json={},
                         )
                         if retry.status_code == 204:
                             return {'status': 'sent'}
@@ -1133,7 +1190,7 @@ class DiscordClient:
 
         Based on docs/Joiner/lib/actions/guild/leave.py.
         """
-        headers = self._discord_headers(token, content_type=True)
+        headers = self._discord_headers(token)
         async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
             try:
                 resp = await client.delete(

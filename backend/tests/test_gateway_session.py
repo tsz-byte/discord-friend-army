@@ -580,12 +580,17 @@ def test_add_friend_sends_put_request(monkeypatch):
 
 
 def test_add_friend_uses_anysolver_on_captcha(monkeypatch):
-    """add_friend calls AnySolver and retries the PUT when captcha is required."""
+    """add_friend calls AnySolver and retries the PUT with captcha in headers, body stays {}."""
     import asyncio
     import app.services.discord_client as dc_module
 
+    put_calls = []
+
     responses = [
-        {'status_code': 400, 'payload': {'captcha_sitekey': 'sk', 'captcha_rqdata': 'rq', 'captcha_rqtoken': 'rqt'}},
+        {'status_code': 400, 'payload': {
+            'captcha_sitekey': 'sk', 'captcha_rqdata': 'rq',
+            'captcha_rqtoken': 'rqt', 'captcha_session_id': 'sess-1',
+        }},
         {'status_code': 204, 'payload': {}},
     ]
 
@@ -594,6 +599,7 @@ def test_add_friend_uses_anysolver_on_captcha(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def put(self, url, headers=None, json=None):
+            put_calls.append({'headers': headers, 'json': json})
             resp_data = responses.pop(0)
             r = type('R', (), {})()
             r.status_code = resp_data['status_code']
@@ -607,13 +613,25 @@ def test_add_friend_uses_anysolver_on_captcha(monkeypatch):
         @staticmethod
         def is_captcha_challenge(p): return bool(p.get('captcha_sitekey'))
         async def solve_discord_challenge(self, *a, **kw):
-            return {'status': 'ready', 'captcha_key': 'solved-key', 'captcha_rqtoken': 'rqt2', 'captcha_rqdata': 'rq2'}
+            return {
+                'status': 'ready',
+                'captcha_key': 'solved-key',
+                'captcha_rqtoken': 'rqt2',
+                'captcha_rqdata': 'rq2',
+            }
 
     monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: _FakeClient())
     client = dc_module.DiscordClient()
     client.captcha_solver = _Solver()
     result = asyncio.run(client.add_friend('u1', 'tok'))
     assert result['status'] == 'sent'
+    # Retry request: captcha fields must be in headers, NOT in body.
+    retry_call = put_calls[1]
+    assert retry_call['headers']['X-Captcha-Key'] == 'solved-key'
+    assert retry_call['headers']['X-Captcha-Rqtoken'] == 'rqt2'
+    assert retry_call['headers']['X-Captcha-Rqdata'] == 'rq2'
+    assert retry_call['headers']['X-Captcha-Session-Id'] == 'sess-1'
+    assert retry_call['json'] == {}  # body stays empty
 
 
 def test_open_dm_channel_posts_recipient_id(monkeypatch):
@@ -668,3 +686,69 @@ def test_leave_guild_sends_delete(monkeypatch):
     result = asyncio.run(client.leave_guild('guild-99', 'tok-leave'))
     assert result['status'] == 'left'
     assert 'guilds/guild-99' in fake.last_url
+
+
+def test_send_message_captcha_uses_headers_body_intact(monkeypatch):
+    """On captcha challenge, send_message retries with captcha in headers; body stays intact."""
+    import asyncio
+    import app.services.discord_client as dc_module
+
+    post_calls = []
+    responses = [
+        # First attempt: captcha challenge
+        {'status_code': 400, 'payload': {
+            'captcha_sitekey': 'sk', 'captcha_rqdata': 'rq',
+            'captcha_rqtoken': 'rqt', 'captcha_session_id': 'sess-2',
+        }},
+        # Retry after solving: success
+        {'status_code': 200, 'payload': {'id': 'msg-1'}},
+    ]
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def post(self, url, headers=None, json=None):
+            post_calls.append({'headers': dict(headers or {}), 'json': json})
+            resp_data = responses.pop(0)
+            r = type('R', (), {})()
+            r.status_code = resp_data['status_code']
+            r.text = str(resp_data['payload'])
+            r.json = lambda: resp_data['payload']
+            r.content = b'{}'
+            r.headers = {}
+            return r
+
+    class _Solver:
+        is_enabled = True
+        @staticmethod
+        def is_captcha_challenge(p): return bool(p.get('captcha_sitekey'))
+        async def solve_discord_challenge(self, *a, **kw):
+            return {
+                'status': 'ready',
+                'captcha_key': 'cap-key',
+                'captcha_rqtoken': 'rqt-solved',
+                'captcha_rqdata': 'rq-solved',
+            }
+
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', lambda **kw: _FakeClient())
+    client = dc_module.DiscordClient()
+    client.captcha_solver = _Solver()
+    result = asyncio.run(client.send_message('ch1', 'hi', 'tok-msg'))
+    assert result['status'] == 'sent'
+    assert len(post_calls) == 2
+    # Retry: captcha fields in headers, original body fields preserved
+    retry = post_calls[1]
+    assert retry['headers']['X-Captcha-Key'] == 'cap-key'
+    assert retry['headers']['X-Captcha-Rqtoken'] == 'rqt-solved'
+    assert retry['headers']['X-Captcha-Rqdata'] == 'rq-solved'
+    assert retry['headers']['X-Captcha-Session-Id'] == 'sess-2'
+    assert retry['json']['content'] == 'hi'
+    assert retry['json']['mobile_network_type'] == 'unknown'
+    assert 'nonce' in retry['json']
+    assert retry['json']['tts'] is False
+    assert retry['json']['flags'] == 0
+    # Captcha fields must NOT appear in the JSON body
+    assert 'captcha_key' not in retry['json']
+    assert 'captcha_rqtoken' not in retry['json']
+    assert 'captcha_rqdata' not in retry['json']
