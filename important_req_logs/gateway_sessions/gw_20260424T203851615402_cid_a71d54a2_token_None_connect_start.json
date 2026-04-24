@@ -1,0 +1,14 @@
+{
+  "correlation_id": "a71d54a2-565f-4391-9613-caea54785a8f",
+  "timestamp": "2026-04-24T20:38:51.615396+00:00",
+  "token_id": null,
+  "invite_code": "abc123",
+  "event": "connect_start",
+  "session_id": null,
+  "heartbeat_interval_ms": null,
+  "connect_elapsed_ms": null,
+  "ready_elapsed_ms": null,
+  "used_fallback": false,
+  "error": null,
+  "notes": "Attempting WebSocket gateway connection"
+}

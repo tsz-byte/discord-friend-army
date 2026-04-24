@@ -140,12 +140,14 @@ class GatewaySession:
 
     async def connect(self) -> None:
         """Open the WebSocket connection and start the message handler."""
+        logger.info('GatewaySession connecting to %s', GATEWAY_URL)
         kwargs: dict = {'impersonate': 'firefox'}
         if self.proxy:
             kwargs['proxies'] = {'https': self.proxy, 'http': self.proxy}
 
         self._http_session = AsyncSession(**kwargs)
         self._ws = await self._http_session.ws_connect(GATEWAY_URL)
+        logger.debug('GatewaySession WebSocket connected')
         self._handle_task = asyncio.create_task(self._handle_messages())
 
     async def wait_for_ready(self, timeout: float = 20.0) -> bool:
@@ -215,6 +217,10 @@ class GatewaySession:
         op = data.get('op')
         if op == 10:  # HELLO
             self._heartbeat_interval = data['d']['heartbeat_interval']
+            logger.info(
+                'GatewaySession HELLO received heartbeat_interval=%.0fms',
+                self._heartbeat_interval,
+            )
             await self._send_identify()
             self._heartbeat_task = asyncio.create_task(self._heartbeat())
             self._connected.set()
@@ -222,9 +228,14 @@ class GatewaySession:
             d = data.get('d') or {}
             self.session_id = d.get('session_id')
             self.analytics_token = d.get('analytics_token')
+            logger.info(
+                'GatewaySession READY received session_id=%s',
+                self.session_id,
+            )
             self._ready.set()
 
     async def _send_identify(self) -> None:
+        logger.info('GatewaySession sending IDENTIFY')
         p = self._properties
         payload = {
             'op': 2,

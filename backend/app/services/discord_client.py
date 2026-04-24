@@ -17,7 +17,9 @@ from browserforge.fingerprints import FingerprintGenerator
 from app.core.config import get_settings
 from app.models.research import CaptchaChallenge
 from app.services.captcha_solver import CaptchaSolverService
+from app.services.error_classifier import classify_discord_error
 from app.services.gateway_session import GatewaySession
+from app.services.join_logger import JoinLogger, start_timer, _mask_token
 
 logger = logging.getLogger('discord_research.discord_client')
 captcha_debug_logger = logging.getLogger('discord_research.captcha_solutions')
@@ -186,14 +188,17 @@ class DiscordClient:
         self._user_agent = _build_user_agent(self._chrome_version)
         self._super_properties = _build_super_properties(self._chrome_version, self._build_number)
         self._join_failure_log_enabled = settings.join_failure_log_enabled
+        self._join_log_all_attempts = settings.join_log_all_attempts
         self._gateway_session_timeout = settings.gateway_session_timeout
-        # Resolve the join failures directory relative to the project root so that
+        # Resolve the join logs directory relative to the project root so that
         # relative paths in the config work correctly regardless of cwd.
         _project_root = Path(__file__).resolve().parent.parent.parent.parent
         _jf_dir = settings.join_failure_log_dir
         self._join_failure_log_dir = (
             Path(_jf_dir) if Path(_jf_dir).is_absolute() else _project_root / _jf_dir
         )
+        # Comprehensive audit logger writing to important_req_logs/.
+        self._join_logger = JoinLogger(log_dir=self._join_failure_log_dir)
 
     async def get_guild(self, guild_id: str) -> dict:
         if not self.token:
@@ -278,6 +283,34 @@ class DiscordClient:
         if context_properties:
             headers['X-Context-Properties'] = context_properties
         return headers
+
+    def _validate_fingerprint(self, fp: '_TokenFP') -> dict:
+        """Validate that all required fingerprint fields are populated.
+
+        Returns a validation result dict with ``valid`` bool and ``issues``
+        list.  Logs issues at DEBUG level; never raises (callers may proceed
+        with a partially valid fingerprint).
+        """
+        issues: list[str] = []
+        if not fp.user_agent:
+            issues.append('user_agent is empty')
+        if not fp.browser_version or fp.browser_version == '0':
+            issues.append(f'browser_version is trivial: {fp.browser_version!r}')
+        if not isinstance(fp.client_identity, dict):
+            issues.append('client_identity is not a dict')
+        elif not all(
+            fp.client_identity.get(k)
+            for k in ('client_launch_id', 'launch_signature', 'client_heartbeat_session_id')
+        ):
+            issues.append(f'client_identity missing required keys: {list(fp.client_identity.keys())}')
+        if not fp.locale:
+            issues.append('locale is empty')
+        if not fp.fingerprint:
+            issues.append('fingerprint dict is empty')
+        result = {'valid': len(issues) == 0, 'issues': issues}
+        if issues:
+            logger.debug('Fingerprint validation issues: %s', issues)
+        return result
 
     async def get_guild_onboarding(self, guild_id: str, token: str) -> dict:
         """Return the onboarding config for a guild, using a user token."""
@@ -390,7 +423,14 @@ class DiscordClient:
         After a successful join the method automatically completes server
         onboarding so the account is immediately able to send messages even if
         the server uses Discord's onboarding gate.
+
+        Every request/response is written to important_req_logs/ via JoinLogger
+        for a complete, auditable end-to-end trace.
         """
+        # Assign a correlation ID that spans the entire join attempt lifecycle.
+        correlation_id = JoinLogger.new_correlation_id()
+        token_preview = _mask_token(token) if token else '****'
+
         code = self.extract_invite_code(invite_code)
         if not code:
             return {'status': 'failed', 'code': 400, 'detail': 'Invalid invite code format'}
@@ -406,25 +446,71 @@ class DiscordClient:
         locale = await self._fetch_user_locale(token=token, proxy_url=proxy_url)
         fp = self._get_token_fingerprint(token, locale=locale)
 
+        # Validate fingerprint fields and log the result.
+        fp_validation = self._validate_fingerprint(fp)
+        logger.debug(
+            'Fingerprint validation invite=%s token_id=%s valid=%s issues=%s',
+            code, token_id, fp_validation['valid'], fp_validation['issues'],
+        )
+
         # ------------------------------------------------------------------
         # Obtain a real WebSocket gateway session_id via the Discord gateway,
         # passing the same fingerprint so IDENTIFY matches the HTTP headers.
         # Falls back to a random session_id if the connection times out.
         # ------------------------------------------------------------------
+        gw_start = start_timer()
+        if self._join_failure_log_enabled:
+            self._join_logger.log_gateway_session(
+                correlation_id=correlation_id,
+                token_id=token_id,
+                invite_code=code,
+                event='connect_start',
+                notes='Attempting WebSocket gateway connection',
+            )
+
         session_id = await self._acquire_gateway_session_id(
             token=token,
             proxy_url=proxy_url,
             timeout=self._gateway_session_timeout,
             fp=fp,
         )
+        gw_elapsed_ms = gw_start.elapsed_ms()
+        gateway_fallback = False
         if session_id is None:
             # Gateway session_id is authoritative; use a random hex as fallback.
             # Do NOT use captcha_session_id from invite_metadata — that is a
             # Discord captcha field, not a WebSocket gateway session identifier.
             session_id = secrets.token_hex(16)
+            gateway_fallback = True
             logger.info(
-                'Discord join using fallback session_id invite=%s token_id=%s', code, token_id
+                'Discord join using fallback session_id invite=%s token_id=%s correlation_id=%s',
+                code, token_id, correlation_id,
             )
+            if self._join_failure_log_enabled:
+                self._join_logger.log_gateway_session(
+                    correlation_id=correlation_id,
+                    token_id=token_id,
+                    invite_code=code,
+                    event='fallback_used',
+                    used_fallback=True,
+                    connect_elapsed_ms=gw_elapsed_ms,
+                    notes='Gateway timed out; using random hex session_id',
+                )
+        else:
+            logger.debug(
+                'GatewaySession READY acquired invite=%s token_id=%s elapsed_ms=%.0f correlation_id=%s',
+                code, token_id, gw_elapsed_ms, correlation_id,
+            )
+            if self._join_failure_log_enabled:
+                self._join_logger.log_gateway_session(
+                    correlation_id=correlation_id,
+                    token_id=token_id,
+                    invite_code=code,
+                    event='ready_received',
+                    session_id=session_id,
+                    ready_elapsed_ms=gw_elapsed_ms,
+                    notes='Real gateway session_id acquired',
+                )
 
         headers = {
             **self._discord_headers(
@@ -474,11 +560,52 @@ class DiscordClient:
                             {k: v for k, v in request_headers.items() if k.startswith('X-Captcha')},
                             self._pretty_json(body),
                         )
+                    req_timer = start_timer()
                     resp = await client.post(
                         f'{self.base_url}/invites/{code}',
                         headers=request_headers,
                         json=body,
                     )
+                    elapsed_ms = req_timer.elapsed_ms()
+
+                    # ----------------------------------------------------------
+                    # Log every attempt to important_req_logs/join_attempts/
+                    # regardless of outcome so we have a complete audit trail.
+                    # ----------------------------------------------------------
+                    if self._join_failure_log_enabled:
+                        try:
+                            resp_body_for_log: object
+                            try:
+                                resp_body_for_log = resp.json()
+                            except Exception:
+                                resp_body_for_log = resp.text
+                            self._join_logger.log_join_attempt(
+                                correlation_id=correlation_id,
+                                token_id=token_id,
+                                token_preview=token_preview,
+                                invite_code=code,
+                                attempt_number=attempt,
+                                request_method='POST',
+                                request_url=f'{self.base_url}/invites/{code}',
+                                request_headers=request_headers,
+                                request_body=body,
+                                response_status=resp.status_code,
+                                response_headers=dict(resp.headers),
+                                response_body=resp_body_for_log,
+                                proxy_url=proxy_url,
+                                session_id=session_id,
+                                fingerprint_validation=fp_validation,
+                                gateway_used=not gateway_fallback,
+                                gateway_fallback=gateway_fallback,
+                                elapsed_ms=elapsed_ms,
+                                notes=(
+                                    'captcha_retry' if captcha_payload.get('captcha_key')
+                                    else 'initial_attempt'
+                                ),
+                            )
+                        except Exception as _log_exc:  # pragma: no cover
+                            logger.warning('Failed to write join_attempt log: %s', _log_exc)
+
                     if resp.status_code in (200, 201):
                         data = resp.json()
                         guild_info = data.get('guild') or {}
@@ -488,7 +615,10 @@ class DiscordClient:
                         access_check = await self.validate_guild_access(guild_id=joined_guild_id, token=token, proxy_url=proxy_url)
                         if joined_guild_id:
                             onboarding_ok = await self.complete_onboarding(joined_guild_id, token, proxy_url)
-                            logger.info('Joined guild %s (onboarding_ok=%s access=%s)', joined_guild_id, onboarding_ok, access_check.get('status'))
+                            logger.info(
+                                'Joined guild %s (onboarding_ok=%s access=%s correlation_id=%s)',
+                                joined_guild_id, onboarding_ok, access_check.get('status'), correlation_id,
+                            )
                         if access_check.get('status') == 'denied':
                             return {
                                 'status': 'failed',
@@ -531,6 +661,20 @@ class DiscordClient:
                         and self.captcha_solver.is_enabled
                         and captcha_attempts < max_captcha_attempts
                     ):
+                        # Log the captcha challenge detection in detail.
+                        if self._join_failure_log_enabled:
+                            captcha_solve_timer = start_timer()
+                            solve_elapsed_placeholder: float | None = None
+                            self._join_logger.log_captcha_challenge(
+                                correlation_id=correlation_id,
+                                token_id=token_id,
+                                invite_code=code,
+                                attempt_number=attempt,
+                                challenge_payload=challenge_payload,
+                                solve_attempted=False,
+                                notes='captcha challenge detected; solve starting',
+                            )
+
                         if captcha_payload_variants and (captcha_payload_variant_index + 1) < len(captcha_payload_variants):
                             captcha_payload_variant_index += 1
                             captcha_payload = captcha_payload_variants[captcha_payload_variant_index]
@@ -547,12 +691,10 @@ class DiscordClient:
                             continue
                         captcha_attempts += 1
                         logger.info(
-                            'Discord join captcha challenge detected invite=%s token_id=%s guild_id=%s attempt=%s',
-                            code,
-                            token_id,
-                            guild_id,
-                            captcha_attempts,
+                            'Discord join captcha challenge detected invite=%s token_id=%s guild_id=%s attempt=%s correlation_id=%s',
+                            code, token_id, guild_id, captcha_attempts, correlation_id,
                         )
+                        captcha_timer = start_timer()
                         solve_result = await self.captcha_solver.solve_discord_challenge(
                             challenge_payload,
                             token_id=token_id,
@@ -561,6 +703,7 @@ class DiscordClient:
                             proxy_url=proxy_url,
                             db=db,
                         )
+                        captcha_elapsed = captcha_timer.elapsed_ms()
                         logger.info(
                             'Discord join captcha solve result invite=%s token_id=%s guild_id=%s result=%s',
                             code,
@@ -575,6 +718,26 @@ class DiscordClient:
                             guild_id,
                             self._pretty_json(solve_result),
                         )
+
+                        # Log the full captcha challenge + solve result.
+                        if self._join_failure_log_enabled:
+                            solved_token = solve_result.get('captcha_key') or ''
+                            self._join_logger.log_captcha_challenge(
+                                correlation_id=correlation_id,
+                                token_id=token_id,
+                                invite_code=code,
+                                attempt_number=attempt,
+                                challenge_payload=challenge_payload,
+                                solve_attempted=True,
+                                solve_service='AnySolver',
+                                solve_task_id=solve_result.get('task_id'),
+                                solve_status=solve_result.get('status'),
+                                solve_solution_token_preview=_mask_token(solved_token) if solved_token else None,
+                                solve_context_id_empty=bool(solve_result.get('captcha_context_id_empty')),
+                                solve_elapsed_ms=captcha_elapsed,
+                                notes=f'captcha_attempt={captcha_attempts}',
+                            )
+
                         if solve_result.get('status') == 'ready':
                             captcha_payload_variants = self._build_captcha_payload_variants(solve_result)
                             captcha_payload_variant_index = 0
@@ -601,7 +764,9 @@ class DiscordClient:
                             'code': resp.status_code,
                             'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown error')}",
                         }
-                        self._log_join_failure(code, token_id, guild_id, resp, body)
+                        self._log_join_failure(code, token_id, guild_id, resp, body,
+                                               correlation_id=correlation_id,
+                                               error_payload=error_payload)
                         return failed_result
 
                     if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts:
@@ -614,12 +779,31 @@ class DiscordClient:
                         'code': resp.status_code,
                         'detail': json.dumps(error_payload, ensure_ascii=False),
                     }
-                    self._log_join_failure(code, token_id, guild_id, resp, body)
+                    self._log_join_failure(code, token_id, guild_id, resp, body,
+                                           correlation_id=correlation_id,
+                                           error_payload=error_payload)
                     return failed_result
                 except httpx.HTTPError as exc:
                     if attempt < max_attempts:
                         await self._sleep_before_retry(attempt)
                         continue
+                    # Log network error as failure.
+                    if self._join_failure_log_enabled:
+                        classification = classify_discord_error(0, error_detail=str(exc))
+                        self._join_logger.log_failure(
+                            correlation_id=correlation_id,
+                            token_id=token_id,
+                            invite_code=code,
+                            error_type=classification['error_type'],
+                            severity=classification['severity'],
+                            is_permanent=classification['is_permanent'],
+                            is_recoverable=classification['is_recoverable'],
+                            root_cause=classification['root_cause'],
+                            recovery_suggestion=classification['recovery_suggestion'],
+                            token_action=classification['token_action'],
+                            attempt_number=attempt,
+                            notes=str(exc),
+                        )
                     return {'status': 'error', 'detail': str(exc)}
 
     @staticmethod
@@ -749,12 +933,16 @@ class DiscordClient:
         guild_id: str | None,
         response: httpx.Response,
         request_body: dict,
+        *,
+        correlation_id: str | None = None,
+        error_payload: dict | None = None,
     ) -> None:
-        """Write a full-response JSON file for a failed Discord join attempt.
+        """Write a root-cause failure analysis record for a failed Discord join attempt.
 
         The file is only written when join_failure_log_enabled=True.
-        Response headers are included as-is; the Authorization header is
-        stripped from request metadata to avoid leaking credentials.
+        Authorization headers are stripped from request metadata to avoid
+        leaking credentials.  Error classification is performed automatically
+        using :func:`classify_discord_error`.
         """
         join_failures_logger.warning(
             'Discord join failed invite=%s token_id=%s guild_id=%s status=%s body=%s',
@@ -769,26 +957,34 @@ class DiscordClient:
             return
 
         try:
-            self._join_failure_log_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
-            filename = f'join_failure_{ts}_invite_{invite_code}_token_{token_id}.json'
-            # Sanitise: never write the Authorization header to disk.
-            safe_req_body = {k: v for k, v in request_body.items() if k.lower() != 'authorization'}
-            record = {
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'invite_code': invite_code,
-                'token_id': token_id,
-                'guild_id': guild_id,
-                'http_status': response.status_code,
-                'response_headers': dict(response.headers),
-                'response_body': response.text,
-                'request_body': safe_req_body,
-            }
-            filepath = self._join_failure_log_dir / filename
-            filepath.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding='utf-8')
-            logger.debug('Join failure response written to %s', filepath)
+            body = error_payload or {}
+            try:
+                if not body:
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        body = {}
+            except Exception:
+                body = {}
+
+            classification = classify_discord_error(response.status_code, body)
+            cid = correlation_id or JoinLogger.new_correlation_id()
+            self._join_logger.log_failure(
+                correlation_id=cid,
+                token_id=token_id,
+                invite_code=invite_code,
+                error_type=classification['error_type'],
+                severity=classification['severity'],
+                is_permanent=classification['is_permanent'],
+                is_recoverable=classification['is_recoverable'],
+                root_cause=classification['root_cause'],
+                recovery_suggestion=classification['recovery_suggestion'],
+                token_action=classification['token_action'],
+                http_status=response.status_code,
+                response_body=response.text[:2000],
+                notes=f'guild_id={guild_id}',
+            )
         except Exception as exc:  # pragma: no cover
-            logger.warning('Failed to write join failure log file: %s', exc)
+            logger.warning('Failed to write join failure log: %s', exc)
 
     async def send_message(
         self,

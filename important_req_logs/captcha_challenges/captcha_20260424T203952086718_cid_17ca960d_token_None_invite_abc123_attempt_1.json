@@ -1,0 +1,30 @@
+{
+  "correlation_id": "17ca960d-8213-4284-ab96-8ecb66c7036e",
+  "timestamp": "2026-04-24T20:39:52.086713+00:00",
+  "token_id": null,
+  "invite_code": "abc123",
+  "attempt_number": 1,
+  "challenge_analysis": {
+    "sitekey_present": true,
+    "rqdata_present": true,
+    "rqtoken_present": false,
+    "session_id_present": false,
+    "service_field": "hcaptcha",
+    "field_completeness": "partial-low (2/4 fields: ['captcha_sitekey', 'captcha_rqdata'])"
+  },
+  "challenge_payload": {
+    "captcha_sitekey": "site-key",
+    "captcha_rqdata": "rq-data",
+    "captcha_service": "hcaptcha"
+  },
+  "solve": {
+    "attempted": true,
+    "service": "AnySolver",
+    "task_id": "task-empty",
+    "status": "ready",
+    "solution_token_preview": "****",
+    "context_id_empty": true,
+    "elapsed_ms": 0.0033970000004046597
+  },
+  "notes": "captcha_attempt=1"
+}

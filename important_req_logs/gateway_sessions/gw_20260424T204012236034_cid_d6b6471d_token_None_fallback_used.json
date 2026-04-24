@@ -1,0 +1,14 @@
+{
+  "correlation_id": "d6b6471d-dc3f-4f4b-8ada-120a4ecd8fc7",
+  "timestamp": "2026-04-24T20:40:12.236022+00:00",
+  "token_id": null,
+  "invite_code": "abc123",
+  "event": "fallback_used",
+  "session_id": null,
+  "heartbeat_interval_ms": null,
+  "connect_elapsed_ms": 20134.719993000544,
+  "ready_elapsed_ms": null,
+  "used_fallback": true,
+  "error": null,
+  "notes": "Gateway timed out; using random hex session_id"
+}

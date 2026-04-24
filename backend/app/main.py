@@ -69,6 +69,63 @@ async def startup_event() -> None:
     Base.metadata.create_all(bind=engine)
     _run_schema_migrations()
 
+    # ------------------------------------------------------------------
+    # Log startup configuration summary
+    # ------------------------------------------------------------------
+    import logging as _logging
+    _startup_log = _logging.getLogger('discord_research')
+    _startup_log.info(
+        '[STARTUP] Discord Friend Army initialising  env=%s  version=%s  runtype=%s',
+        settings.app_env,
+        settings.app_version,
+        settings.runtype,
+    )
+
+    # AnySolver API key validation
+    _anysolver_key = (settings.anysolver_api_key or '').strip()
+    if _anysolver_key:
+        _key_preview = f'{_anysolver_key[:4]}...{_anysolver_key[-4:]}' if len(_anysolver_key) >= 8 else '****'
+        _startup_log.info('[STARTUP] AnySolver: configured (key preview=%s)', _key_preview)
+        # Attempt a lightweight connectivity check (createTask with empty key would
+        # return an API error; we just verify the host is reachable without spending
+        # money on a real solve).
+        try:
+            import httpx as _httpx
+            _base = (settings.anysolver_base_url or 'https://api.anysolver.com').rstrip('/')
+            async with _httpx.AsyncClient(timeout=5.0) as _ac:
+                _probe = await _ac.post(
+                    f'{_base}/createTask',
+                    json={'clientKey': _anysolver_key, 'task': {'type': 'ping'}},
+                )
+            _startup_log.info('[STARTUP] AnySolver connectivity check status=%s', _probe.status_code)
+        except Exception as _exc:
+            _startup_log.warning('[STARTUP] AnySolver connectivity check failed: %s', _exc)
+    else:
+        _startup_log.warning(
+            '[STARTUP] AnySolver: NOT configured — set DFA_ANYSOLVER_API_KEY to enable captcha solving'
+        )
+
+    # Join logging directory
+    from pathlib import Path as _Path
+    _log_dir_raw = settings.join_failure_log_dir
+    _project_root = _Path(__file__).resolve().parent.parent
+    _log_dir = (
+        _Path(_log_dir_raw) if _Path(_log_dir_raw).is_absolute()
+        else _project_root / _log_dir_raw
+    )
+    try:
+        for _sub in ('join_attempts', 'captcha_challenges', 'gateway_sessions', 'failures'):
+            (_log_dir / _sub).mkdir(parents=True, exist_ok=True)
+        _startup_log.info('[STARTUP] Join logs directory: %s', _log_dir)
+    except Exception as _exc:
+        _startup_log.warning('[STARTUP] Could not create join logs directory %s: %s', _log_dir, _exc)
+
+    _startup_log.info(
+        '[STARTUP] Discord API: %s  log_all_attempts=%s',
+        settings.discord_api_base_url,
+        settings.join_log_all_attempts,
+    )
+
     # Auto-start the replication loop if there are tokens + mappings in the DB.
     # We do this in a best-effort fashion — the loop itself logs any errors.
     try:
