@@ -53,6 +53,24 @@ def _proxy_for_token(token_row: AccountToken) -> str | None:
     return None
 
 
+def _safe_agent_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == 'detail' and isinstance(item, str):
+                lowered = item.lower()
+                if 'traceback' in lowered or 'file \"' in lowered:
+                    cleaned[key] = 'internal_error'
+                else:
+                    cleaned[key] = item[:500]
+            else:
+                cleaned[key] = _safe_agent_result(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_safe_agent_result(item) for item in value]
+    return value
+
+
 def _select_token(db: Session, token_id: int | None = None) -> AccountToken:
     query = db.query(AccountToken).filter(AccountToken.is_active.is_(True))
     if token_id is not None:
@@ -455,31 +473,31 @@ async def _send_embed_with_token(
     timestamp = payload.get('timestamp')
     if timestamp is not None:
         payload['timestamp'] = _normalize_timestamp(timestamp)
-    return await discord_client.send_embed(
+    return _safe_agent_result(await discord_client.send_embed(
         channel_id=resolved,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
         **payload,
-    )
+    ))
 
 
 @router.post('/channel/send-embed')
 async def channel_send_embed(request: ChannelSendEmbedRequest, db: Session = Depends(get_db)):
     payload = request.model_dump(exclude={'channel_id', 'guild_id', 'token_id'})
-    return await _send_embed_with_token(
+    return _safe_agent_result(await _send_embed_with_token(
         db=db,
         channel_id=request.channel_id,
         guild_id=request.guild_id,
         token_id=request.token_id,
         payload=payload,
-    )
+    ))
 
 
 @router.post('/channel/send-message')
 async def channel_send_message(request: ChannelSendMessageRequest, db: Session = Depends(get_db)):
     token_row = _select_token(db, request.token_id)
     resolved = await _resolve_channel_id(request.channel_id, request.guild_id, db)
-    return await discord_client.send_message(
+    return _safe_agent_result(await discord_client.send_message(
         channel_id=resolved,
         content=request.content,
         token=token_row.token_value,
@@ -488,13 +506,13 @@ async def channel_send_message(request: ChannelSendMessageRequest, db: Session =
         mention_roles=request.mention_roles,
         mention_users=request.mention_users,
         tts=request.tts,
-    )
+    ))
 
 
 @router.post('/channel/send-dm')
 async def channel_send_dm(request: ChannelSendDMRequest, db: Session = Depends(get_db)):
     token_row = _select_token(db, request.token_id)
-    return await discord_client.send_dm(
+    return _safe_agent_result(await discord_client.send_dm(
         user_id=request.user_id,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
@@ -503,14 +521,14 @@ async def channel_send_dm(request: ChannelSendDMRequest, db: Session = Depends(g
         description=request.description,
         color=request.color,
         fields=request.fields,
-    )
+    ))
 
 
 @router.delete('/channel/delete')
 @router.post('/channel/delete')
 async def channel_delete(request: ChannelDeleteRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.delete_channel(channel_id=request.channel_id, bot_token=bot_token)
+    return _safe_agent_result(await discord_client.delete_channel(channel_id=request.channel_id, bot_token=bot_token))
 
 
 @router.post('/channel/create')
@@ -526,7 +544,7 @@ async def channel_create(request: ChannelCreateRequest, db: Session = Depends(ge
         'rate_limit_per_user': request.slowmode_delay,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    return await discord_client.create_channel(guild_id=request.guild_id, bot_token=bot_token, payload=payload)
+    return _safe_agent_result(await discord_client.create_channel(guild_id=request.guild_id, bot_token=bot_token, payload=payload))
 
 
 @router.patch('/channel/edit')
@@ -540,17 +558,17 @@ async def channel_edit(request: ChannelEditRequest, db: Session = Depends(get_db
         'position': request.position,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    return await discord_client.edit_channel(channel_id=request.channel_id, bot_token=bot_token, payload=payload)
+    return _safe_agent_result(await discord_client.edit_channel(channel_id=request.channel_id, bot_token=bot_token, payload=payload))
 
 
 @router.get('/channel/list')
 async def channel_list(guild_id: str = Query(...), token_id: int | None = Query(default=None), db: Session = Depends(get_db)):
     token_row = _select_token(db, token_id)
-    return await discord_client.get_guild_channels(
+    return _safe_agent_result(await discord_client.get_guild_channels(
         guild_id=guild_id,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/channel/bulk-send')
@@ -578,59 +596,59 @@ async def channel_bulk_send(request: ChannelBulkSendRequest, db: Session = Depen
 @router.post('/message/delete')
 async def message_delete(request: MessageDeleteRequest, db: Session = Depends(get_db)):
     if request.bot_token:
-        return await discord_client.delete_message(request.channel_id, request.message_id, request.bot_token, bot=True)
+        return _safe_agent_result(await discord_client.delete_message(request.channel_id, request.message_id, request.bot_token, bot=True))
     token_row = _select_token(db, request.token_id)
-    return await discord_client.delete_message(
+    return _safe_agent_result(await discord_client.delete_message(
         request.channel_id,
         request.message_id,
         token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/message/bulk-delete')
 async def message_bulk_delete(request: MessageBulkDeleteRequest):
-    return await discord_client.bulk_delete_messages(
+    return _safe_agent_result(await discord_client.bulk_delete_messages(
         channel_id=request.channel_id,
         message_ids=request.message_ids,
         bot_token=request.bot_token,
-    )
+    ))
 
 
 @router.patch('/message/edit')
 async def message_edit(request: MessageEditRequest, db: Session = Depends(get_db)):
     token_row = _select_token(db, request.token_id)
-    return await discord_client.edit_message(
+    return _safe_agent_result(await discord_client.edit_message(
         channel_id=request.channel_id,
         message_id=request.message_id,
         token=token_row.token_value,
         content=request.content,
         embeds=request.embeds,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/message/pin')
 async def message_pin(request: MessagePinRequest, db: Session = Depends(get_db)):
     token_row = _select_token(db, request.token_id)
-    return await discord_client.pin_message(
+    return _safe_agent_result(await discord_client.pin_message(
         channel_id=request.channel_id,
         message_id=request.message_id,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/message/react')
 async def message_react(request: MessageReactRequest, db: Session = Depends(get_db)):
     token_row = _select_token(db, request.token_id)
-    return await discord_client.add_reaction(
+    return _safe_agent_result(await discord_client.add_reaction(
         channel_id=request.channel_id,
         message_id=request.message_id,
         emoji=request.emoji,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/campaign/post')
@@ -650,7 +668,7 @@ async def campaign_post(request: CampaignPostRequest, db: Session = Depends(get_
         'mention_users': request.mention_users,
         'timestamp': _normalize_timestamp(request.timestamp),
     }
-    return await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload)
+    return _safe_agent_result(await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload))
 
 
 @router.post('/campaign/invite-boost')
@@ -668,7 +686,7 @@ async def campaign_invite_boost(request: CampaignInviteBoostRequest, db: Session
         'fields': fields,
         'footer_text': request.footer_text,
     }
-    return await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload)
+    return _safe_agent_result(await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload))
 
 
 @router.post('/campaign/referral-post')
@@ -690,7 +708,7 @@ async def campaign_referral_post(request: CampaignReferralPostRequest, db: Sessi
         'footer_text': request.footer_text,
         'image_url': request.image_url,
     }
-    return await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload)
+    return _safe_agent_result(await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload))
 
 
 @router.post('/campaign/social-push')
@@ -711,7 +729,7 @@ async def campaign_social_push(request: CampaignSocialPushRequest, db: Session =
         'image_url': request.image_url,
         'footer_text': request.footer_text,
     }
-    return await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload)
+    return _safe_agent_result(await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload))
 
 
 @router.post('/campaign/growth-post')
@@ -733,7 +751,7 @@ async def campaign_growth_post(request: CampaignGrowthPostRequest, db: Session =
         'thumbnail_url': request.thumbnail_url,
         'footer_text': request.footer_text,
     }
-    return await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload)
+    return _safe_agent_result(await _send_embed_with_token(db=db, channel_id=request.channel_id, guild_id=request.guild_id, token_id=request.token_id, payload=payload))
 
 
 @router.post('/campaign/multi-channel')
@@ -786,13 +804,13 @@ async def role_add(request: RoleChangeRequest, db: Session = Depends(get_db)):
     if not bot_token:
         token_row = _select_token(db, request.token_id)
         bot_token = token_row.token_value
-    return await discord_client.add_role_to_member(
+    return _safe_agent_result(await discord_client.add_role_to_member(
         guild_id=request.guild_id,
         user_id=request.user_id,
         role_id=request.role_id,
         bot_token=bot_token,
         reason=request.reason,
-    )
+    ))
 
 
 @router.post('/role/remove')
@@ -801,23 +819,23 @@ async def role_remove(request: RoleChangeRequest, db: Session = Depends(get_db))
     if not bot_token:
         token_row = _select_token(db, request.token_id)
         bot_token = token_row.token_value
-    return await discord_client.remove_role_from_member(
+    return _safe_agent_result(await discord_client.remove_role_from_member(
         guild_id=request.guild_id,
         user_id=request.user_id,
         role_id=request.role_id,
         bot_token=bot_token,
         reason=request.reason,
-    )
+    ))
 
 
 @router.get('/role/list')
 async def role_list(guild_id: str = Query(...), token_id: int | None = Query(default=None), db: Session = Depends(get_db)):
     token_row = _select_token(db, token_id)
-    return await discord_client.get_guild_roles(
+    return _safe_agent_result(await discord_client.get_guild_roles(
         guild_id=guild_id,
         token=token_row.token_value,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/role/bulk-assign')
@@ -840,35 +858,35 @@ async def member_kick(request: MemberKickRequest, db: Session = Depends(get_db))
     if not bot_token:
         token_row = _select_token(db, request.token_id)
         bot_token = token_row.token_value
-    return await discord_client.kick_member(
+    return _safe_agent_result(await discord_client.kick_member(
         guild_id=request.guild_id,
         user_id=request.user_id,
         bot_token=bot_token,
         reason=request.reason,
-    )
+    ))
 
 
 @router.post('/member/ban')
 async def member_ban(request: MemberBanRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.ban_member(
+    return _safe_agent_result(await discord_client.ban_member(
         guild_id=request.guild_id,
         user_id=request.user_id,
         bot_token=bot_token,
         reason=request.reason,
         delete_message_days=request.delete_message_days,
-    )
+    ))
 
 
 @router.post('/member/unban')
 async def member_unban(request: MemberUnbanRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.unban_member(
+    return _safe_agent_result(await discord_client.unban_member(
         guild_id=request.guild_id,
         user_id=request.user_id,
         bot_token=bot_token,
         reason=request.reason,
-    )
+    ))
 
 
 @router.get('/member/list')
@@ -879,12 +897,12 @@ async def member_list(
     db: Session = Depends(get_db),
 ):
     token_row = _select_token(db, token_id)
-    return await discord_client.get_guild_members_list(
+    return _safe_agent_result(await discord_client.get_guild_members_list(
         guild_id=guild_id,
         token=token_row.token_value,
         limit=limit,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.get('/member/search')
@@ -896,19 +914,19 @@ async def member_search(
     db: Session = Depends(get_db),
 ):
     token_row = _select_token(db, token_id)
-    return await discord_client.search_guild_members(
+    return _safe_agent_result(await discord_client.search_guild_members(
         guild_id=guild_id,
         token=token_row.token_value,
         query=query,
         limit=limit,
         proxy_url=_proxy_for_token(token_row),
-    )
+    ))
 
 
 @router.post('/thread/create')
 async def thread_create(request: ThreadCreateRequest, db: Session = Depends(get_db)):
     if request.bot_token:
-        return await discord_client.create_thread(
+        return _safe_agent_result(await discord_client.create_thread(
             channel_id=request.channel_id,
             name=request.name,
             token=request.bot_token,
@@ -916,9 +934,9 @@ async def thread_create(request: ThreadCreateRequest, db: Session = Depends(get_
             thread_type=request.type,
             message=request.message,
             bot=True,
-        )
+        ))
     token_row = _select_token(db, request.token_id)
-    return await discord_client.create_thread(
+    return _safe_agent_result(await discord_client.create_thread(
         channel_id=request.channel_id,
         name=request.name,
         token=token_row.token_value,
@@ -926,13 +944,13 @@ async def thread_create(request: ThreadCreateRequest, db: Session = Depends(get_
         thread_type=request.type,
         message=request.message,
         bot=False,
-    )
+    ))
 
 
 @router.post('/invite/create')
 async def invite_create(request: InviteCreateRequest, db: Session = Depends(get_db)):
     if request.bot_token:
-        return await discord_client.create_invite(
+        return _safe_agent_result(await discord_client.create_invite(
             channel_id=request.channel_id,
             token=request.bot_token,
             max_age=request.max_age,
@@ -940,9 +958,9 @@ async def invite_create(request: InviteCreateRequest, db: Session = Depends(get_
             temporary=request.temporary,
             unique=request.unique,
             bot=True,
-        )
+        ))
     token_row = _select_token(db, request.token_id)
-    return await discord_client.create_invite(
+    return _safe_agent_result(await discord_client.create_invite(
         channel_id=request.channel_id,
         token=token_row.token_value,
         max_age=request.max_age,
@@ -950,7 +968,7 @@ async def invite_create(request: InviteCreateRequest, db: Session = Depends(get_
         temporary=request.temporary,
         unique=request.unique,
         bot=False,
-    )
+    ))
 
 
 @router.get('/invite/list')
@@ -962,9 +980,9 @@ async def invite_list(
 ):
     token_row = _select_token(db, token_id)
     if channel_id:
-        return await discord_client.get_channel_invites(channel_id=channel_id, token=token_row.token_value, proxy_url=_proxy_for_token(token_row))
+        return _safe_agent_result(await discord_client.get_channel_invites(channel_id=channel_id, token=token_row.token_value, proxy_url=_proxy_for_token(token_row)))
     if guild_id:
-        return await discord_client.get_guild_invites(guild_id=guild_id, token=token_row.token_value, proxy_url=_proxy_for_token(token_row))
+        return _safe_agent_result(await discord_client.get_guild_invites(guild_id=guild_id, token=token_row.token_value, proxy_url=_proxy_for_token(token_row)))
     raise HTTPException(status_code=400, detail='Either channel_id or guild_id is required')
 
 
@@ -972,23 +990,23 @@ async def invite_list(
 @router.post('/invite/delete')
 async def invite_delete(request: InviteDeleteRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.delete_invite(invite_code=request.invite_code, bot_token=bot_token)
+    return _safe_agent_result(await discord_client.delete_invite(invite_code=request.invite_code, bot_token=bot_token))
 
 
 @router.post('/webhook/create')
 async def webhook_create(request: WebhookCreateRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.create_webhook(
+    return _safe_agent_result(await discord_client.create_webhook(
         channel_id=request.channel_id,
         bot_token=bot_token,
         name=request.name,
         avatar=request.avatar_url,
-    )
+    ))
 
 
 @router.post('/webhook/send')
 async def webhook_send(request: WebhookSendRequest):
-    return await discord_client.send_via_webhook(
+    return _safe_agent_result(await discord_client.send_via_webhook(
         webhook_url=request.webhook_url,
         webhook_id=request.webhook_id,
         webhook_token=request.webhook_token,
@@ -1008,20 +1026,20 @@ async def webhook_send(request: WebhookSendRequest):
         mention_everyone=request.mention_everyone,
         mention_roles=request.mention_roles,
         mention_users=request.mention_users,
-    )
+    ))
 
 
 @router.delete('/webhook/delete')
 async def webhook_delete(request: WebhookDeleteRequest, db: Session = Depends(get_db)):
     bot_token = request.bot_token or _select_token(db).token_value
-    return await discord_client.delete_webhook(webhook_id=request.webhook_id, bot_token=bot_token)
+    return _safe_agent_result(await discord_client.delete_webhook(webhook_id=request.webhook_id, bot_token=bot_token))
 
 
 @router.get('/webhook/list')
 async def webhook_list(channel_id: str = Query(...), bot_token: str | None = Query(default=None), db: Session = Depends(get_db)):
     if not bot_token:
         bot_token = _select_token(db).token_value
-    return await discord_client.list_webhooks(channel_id=channel_id, bot_token=bot_token)
+    return _safe_agent_result(await discord_client.list_webhooks(channel_id=channel_id, bot_token=bot_token))
 
 
 @router.get('/server/info')
@@ -1047,12 +1065,12 @@ async def server_info(guild_id: str = Query(...), token_id: int | None = Query(d
 
 @router.get('/server/channels')
 async def server_channels(guild_id: str = Query(...), token_id: int | None = Query(default=None), db: Session = Depends(get_db)):
-    return await channel_list(guild_id=guild_id, token_id=token_id, db=db)
+    return _safe_agent_result(await channel_list(guild_id=guild_id, token_id=token_id, db=db))
 
 
 @router.get('/server/roles')
 async def server_roles(guild_id: str = Query(...), token_id: int | None = Query(default=None), db: Session = Depends(get_db)):
-    return await role_list(guild_id=guild_id, token_id=token_id, db=db)
+    return _safe_agent_result(await role_list(guild_id=guild_id, token_id=token_id, db=db))
 
 
 async def _deliver_scheduled_message(record: ScheduledMessage) -> tuple[str, str | None]:
