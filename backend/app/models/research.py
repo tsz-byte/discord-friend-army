@@ -1,4 +1,5 @@
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, func
+from datetime import datetime
 
 from app.db.session import Base
 
@@ -296,3 +297,17 @@ class AppSetting(Base):
     key = Column(String(128), nullable=False, unique=True, index=True)
     value = Column(Text, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ScheduledMessage(Base):
+    __tablename__ = 'scheduled_messages'
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(String, nullable=False)
+    token_id = Column(Integer, nullable=True)
+    send_at = Column(DateTime, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String, default='pending')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)

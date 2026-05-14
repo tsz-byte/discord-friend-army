@@ -180,6 +180,24 @@ class AIConversationResponse(BaseModel):
     usage: dict = Field(default_factory=dict)
 
 
+class AIAgentConversationRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    conversation_history: list[dict] = Field(default_factory=list)
+    system_prompt: str | None = None
+    guild_id: str | None = None
+    max_steps: int = Field(default=30, ge=1, le=100)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1, le=16384)
+
+
+class AIAgentConversationResponse(BaseModel):
+    response: str
+    steps: list[dict] = Field(default_factory=list)
+    tool_calls_made: int
+    model: str
+    usage: dict = Field(default_factory=dict)
+
+
 class ProxyRecord(BaseModel):
     id: int
     host: str
