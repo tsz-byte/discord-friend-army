@@ -811,11 +811,12 @@ class DiscordClient:
         X-Captcha-Session-Id).  The original body is kept intact.
         """
         headers = self._discord_headers(token, content_type=True)
-        mention_everyone = bool(mention_everyone or ('@everyone' in content or '@here' in content))
+        content_text = content or ''
+        mention_everyone = bool(mention_everyone or ('@everyone' in content_text or '@here' in content_text))
         # Body template — nonce is regenerated fresh for every send/retry
         # attempt, matching docs/Joiner/lib/actions/misc/send.py _send().
         body_base = {
-            'content': content,
+            'content': content_text,
             'tts': bool(tts),
             'allowed_mentions': self._build_allowed_mentions(
                 mention_everyone=mention_everyone,

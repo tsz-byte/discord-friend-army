@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from app.services.token_manager import TokenManagerService
 router = APIRouter(prefix='/agent', tags=['agent-tools'])
 discord_client = DiscordClient()
 token_manager = TokenManagerService()
+logger = logging.getLogger('discord_research.agent_tools')
 _scheduler_task: asyncio.Task | None = None
 _NUMERIC_ID_RE = re.compile(r'^\d+$')
 
@@ -1123,8 +1125,8 @@ async def _scheduled_dispatch_loop() -> None:
             )
             for row in pending:
                 await _deliver_scheduled_message(row)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning('scheduled_dispatch_loop error: %s', exc)
         finally:
             db.close()
         await asyncio.sleep(1.0)

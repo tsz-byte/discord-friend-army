@@ -246,7 +246,8 @@ class AIChatService:
         if conversation_history:
             messages.extend(conversation_history)
         if guild_id:
-            messages.append({'role': 'system', 'content': f'Current guild context: {guild_id}'})
+            guild_context = str(guild_id).strip()[:128]
+            messages.append({'role': 'system', 'content': f'Current guild context: {guild_context}'})
         # Keep request payloads bounded for provider compatibility and predictable token usage.
         messages.append({'role': 'user', 'content': message[:4000]})
 
