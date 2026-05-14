@@ -10,6 +10,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from browserforge.fingerprints import FingerprintGenerator
@@ -796,6 +797,10 @@ class DiscordClient:
         content: str,
         token: str,
         proxy_url: str | None = None,
+        mention_everyone: bool = False,
+        mention_roles: list[str] | None = None,
+        mention_users: list[str] | None = None,
+        tts: bool = False,
     ) -> dict:
         """Send a message to a Discord channel using a user token.
 
@@ -806,11 +811,18 @@ class DiscordClient:
         X-Captcha-Session-Id).  The original body is kept intact.
         """
         headers = self._discord_headers(token, content_type=True)
+        content_text = content or ''
+        mention_everyone = bool(mention_everyone or ('@everyone' in content_text or '@here' in content_text))
         # Body template — nonce is regenerated fresh for every send/retry
         # attempt, matching docs/Joiner/lib/actions/misc/send.py _send().
         body_base = {
-            'content': content,
-            'tts': False,
+            'content': content_text,
+            'tts': bool(tts),
+            'allowed_mentions': self._build_allowed_mentions(
+                mention_everyone=mention_everyone,
+                mention_roles=mention_roles,
+                mention_users=mention_users,
+            ),
             'flags': 0,
             'mobile_network_type': 'unknown',
         }
@@ -886,6 +898,775 @@ class DiscordClient:
                         await self._sleep_before_retry(attempt)
                         continue
                     return {'status': 'error', 'detail': str(exc)}
+
+    @staticmethod
+    def _build_allowed_mentions(
+        mention_everyone: bool = False,
+        mention_roles: list[str] | None = None,
+        mention_users: list[str] | None = None,
+    ) -> dict:
+        parse: list[str] = []
+        if mention_everyone:
+            parse.append('everyone')
+        return {
+            'parse': parse,
+            'roles': [str(item) for item in (mention_roles or [])],
+            'users': [str(item) for item in (mention_users or [])],
+        }
+
+    @staticmethod
+    def _build_embed_payload(
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        url: str | None = None,
+        color: int | None = None,
+        timestamp: str | None = None,
+        author_name: str | None = None,
+        author_url: str | None = None,
+        author_icon_url: str | None = None,
+        footer_text: str | None = None,
+        footer_icon_url: str | None = None,
+        thumbnail_url: str | None = None,
+        image_url: str | None = None,
+        fields: list[dict] | None = None,
+    ) -> dict:
+        embed: dict = {}
+        if title is not None:
+            embed['title'] = str(title)
+        if description is not None:
+            embed['description'] = str(description)
+        if url is not None:
+            embed['url'] = str(url)
+        if color is not None:
+            embed['color'] = int(color)
+        if timestamp is not None:
+            embed['timestamp'] = str(timestamp)
+        if author_name is not None:
+            author: dict = {'name': str(author_name)}
+            if author_url is not None:
+                author['url'] = str(author_url)
+            if author_icon_url is not None:
+                author['icon_url'] = str(author_icon_url)
+            embed['author'] = author
+        if footer_text is not None:
+            footer: dict = {'text': str(footer_text)}
+            if footer_icon_url is not None:
+                footer['icon_url'] = str(footer_icon_url)
+            embed['footer'] = footer
+        if thumbnail_url is not None:
+            embed['thumbnail'] = {'url': str(thumbnail_url)}
+        if image_url is not None:
+            embed['image'] = {'url': str(image_url)}
+        if fields is not None:
+            filtered_fields = []
+            for item in fields:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('name') is None or item.get('value') is None:
+                    continue
+                filtered_fields.append(
+                    {
+                        'name': str(item.get('name')),
+                        'value': str(item.get('value')),
+                        'inline': bool(item.get('inline', False)),
+                    }
+                )
+            if filtered_fields:
+                embed['fields'] = filtered_fields
+        return embed
+
+    def _build_api_headers(self, token: str, *, content_type: bool = True, bot: bool = False) -> dict:
+        if bot:
+            raw = (token or self.token or '').strip()
+            bare = raw[4:] if raw.lower().startswith('bot ') else raw
+            if not bare:
+                return {}
+            headers = {'Authorization': f'Bot {bare}'}
+            if content_type:
+                headers['Content-Type'] = 'application/json'
+            return headers
+        return self._discord_headers(token, content_type=content_type)
+
+    async def _discord_json_request(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        token: str,
+        json_body: dict | None = None,
+        params: dict | None = None,
+        proxy_url: str | None = None,
+        bot: bool = False,
+        reason: str | None = None,
+    ) -> dict:
+        headers = self._build_api_headers(token, content_type=bool(json_body), bot=bot)
+        if not headers:
+            return {'status': 'failed', 'detail': 'token missing'}
+        if reason:
+            headers['X-Audit-Log-Reason'] = reason[:512]
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            try:
+                response = await client.request(
+                    method.upper(),
+                    f'{self.base_url}{endpoint}',
+                    headers=headers,
+                    json=json_body,
+                    params=params,
+                )
+                if response.status_code in (200, 201, 202, 204):
+                    payload = response.json() if response.content else {}
+                    return {'status': 'ok', 'data': payload, 'code': response.status_code}
+                error_payload = self._response_error_payload(response)
+                return {
+                    'status': 'failed',
+                    'code': response.status_code,
+                    'error_code': error_payload.get('code'),
+                    'detail': error_payload.get('message', response.text[:500]),
+                    'data': error_payload,
+                }
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
+
+    async def send_embed(
+        self,
+        channel_id: str,
+        token: str,
+        proxy_url: str | None = None,
+        content: str | None = None,
+        username: str | None = None,
+        avatar_url: str | None = None,
+        tts: bool = False,
+        title: str | None = None,
+        description: str | None = None,
+        url: str | None = None,
+        color: int | None = None,
+        timestamp: str | None = None,
+        author_name: str | None = None,
+        author_url: str | None = None,
+        author_icon_url: str | None = None,
+        footer_text: str | None = None,
+        footer_icon_url: str | None = None,
+        thumbnail_url: str | None = None,
+        image_url: str | None = None,
+        fields: list[dict] | None = None,
+        mention_everyone: bool = False,
+        mention_roles: list[str] | None = None,
+        mention_users: list[str] | None = None,
+        embeds: list[dict] | None = None,
+    ) -> dict:
+        body_embeds = embeds
+        if body_embeds is None:
+            embed = self._build_embed_payload(
+                title=title,
+                description=description,
+                url=url,
+                color=color,
+                timestamp=timestamp,
+                author_name=author_name,
+                author_url=author_url,
+                author_icon_url=author_icon_url,
+                footer_text=footer_text,
+                footer_icon_url=footer_icon_url,
+                thumbnail_url=thumbnail_url,
+                image_url=image_url,
+                fields=fields,
+            )
+            body_embeds = [embed] if embed else []
+        mention_everyone = bool(mention_everyone or ('@everyone' in (content or '') or '@here' in (content or '')))
+        payload = {
+            'content': content or '',
+            'tts': bool(tts),
+            'embeds': body_embeds,
+            'allowed_mentions': self._build_allowed_mentions(
+                mention_everyone=mention_everyone,
+                mention_roles=mention_roles,
+                mention_users=mention_users,
+            ),
+            'flags': 0,
+            'mobile_network_type': 'unknown',
+        }
+        user_token_mode = not ((token or '').lower().startswith('bot ') or self.runtype == 'BOTT')
+        if not user_token_mode and (username or avatar_url):
+            webhook_result = await self.send_via_webhook(
+                webhook_url=None,
+                webhook_id=None,
+                webhook_token=None,
+                channel_id=channel_id,
+                bot_token=token,
+                content=content,
+                username=username,
+                avatar_url=avatar_url,
+                tts=tts,
+                embeds=body_embeds,
+                mention_everyone=mention_everyone,
+                mention_roles=mention_roles,
+                mention_users=mention_users,
+            )
+            return webhook_result
+        headers = self._build_api_headers(token, content_type=True, bot=not user_token_mode)
+        if not headers:
+            return {'status': 'failed', 'detail': 'token missing'}
+        async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    request_headers = dict(headers)
+                    request_payload = dict(payload)
+                    request_payload['nonce'] = _generate_nonce()
+                    response = await client.post(
+                        f'{self.base_url}/channels/{channel_id}/messages',
+                        headers=request_headers,
+                        json=request_payload,
+                    )
+                    if response.status_code in (200, 201):
+                        return {'status': 'sent', 'message': response.json()}
+                    if response.status_code in (401, 403):
+                        error_payload = self._response_error_payload(response)
+                        return {
+                            'status': 'failed',
+                            'code': response.status_code,
+                            'error_code': error_payload.get('code'),
+                            'detail': error_payload.get('message', response.text[:300]),
+                        }
+                    error_payload = self._response_error_payload(response)
+                    if (
+                        user_token_mode
+                        and response.status_code == 400
+                        and self.captcha_solver.is_captcha_challenge(error_payload)
+                        and self.captcha_solver.is_enabled
+                    ):
+                        fp = self._get_token_fingerprint(token)
+                        solve_result = await self.captcha_solver.solve_discord_challenge(
+                            error_payload,
+                            user_agent=fp.user_agent,
+                            proxy_url=proxy_url,
+                        )
+                        if solve_result.get('status') == 'ready':
+                            captcha_headers = dict(request_headers)
+                            captcha_headers['X-Captcha-Key'] = str(solve_result['captcha_key'])
+                            if solve_result.get('captcha_rqtoken'):
+                                captcha_headers['X-Captcha-Rqtoken'] = str(solve_result['captcha_rqtoken'])
+                            if solve_result.get('captcha_rqdata'):
+                                captcha_headers['X-Captcha-Rqdata'] = str(solve_result['captcha_rqdata'])
+                            if error_payload.get('captcha_session_id'):
+                                captcha_headers['X-Captcha-Session-Id'] = str(error_payload['captcha_session_id'])
+                            retry_response = await client.post(
+                                f'{self.base_url}/channels/{channel_id}/messages',
+                                headers=captcha_headers,
+                                json={**request_payload, 'nonce': _generate_nonce()},
+                            )
+                            if retry_response.status_code in (200, 201):
+                                return {'status': 'sent', 'message': retry_response.json()}
+                            retry_error = self._response_error_payload(retry_response)
+                            return {
+                                'status': 'failed',
+                                'code': retry_response.status_code,
+                                'detail': json.dumps(retry_error, ensure_ascii=False),
+                            }
+                        return {
+                            'status': 'failed',
+                            'code': response.status_code,
+                            'detail': f"Captcha solve failed: {solve_result.get('detail', 'unknown')}",
+                        }
+                    if response.status_code == 429 and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt, retry_after_seconds=self._retry_after_seconds(response))
+                        continue
+                    if response.status_code >= 500 and attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {'status': 'failed', 'code': response.status_code, 'detail': response.text[:500]}
+                except httpx.HTTPError as exc:
+                    if attempt < max_attempts:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    return {'status': 'error', 'detail': str(exc)}
+
+    async def send_dm(
+        self,
+        user_id: str,
+        token: str,
+        proxy_url: str | None = None,
+        content: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        color: int | None = None,
+        fields: list[dict] | None = None,
+        embeds: list[dict] | None = None,
+    ) -> dict:
+        channel_result = await self.open_dm_channel(user_id=user_id, token=token, proxy_url=proxy_url)
+        if channel_result.get('status') != 'ok':
+            return channel_result
+        dm_channel = (channel_result.get('channel') or {}).get('id')
+        if not dm_channel:
+            return {'status': 'failed', 'detail': 'Failed to open DM channel'}
+        if embeds is not None or any(item is not None for item in (title, description, color, fields)):
+            return await self.send_embed(
+                channel_id=str(dm_channel),
+                token=token,
+                proxy_url=proxy_url,
+                content=content,
+                title=title,
+                description=description,
+                color=color,
+                fields=fields,
+                embeds=embeds,
+            )
+        return await self.send_message(
+            channel_id=str(dm_channel),
+            content=content or '',
+            token=token,
+            proxy_url=proxy_url,
+        )
+
+    async def delete_message(self, channel_id: str, message_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/channels/{channel_id}/messages/{message_id}',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def delete_channel(self, channel_id: str, bot_token: str) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/channels/{channel_id}',
+            token=bot_token,
+            bot=True,
+        )
+
+    async def create_channel(self, guild_id: str, bot_token: str, payload: dict) -> dict:
+        return await self._discord_json_request(
+            method='POST',
+            endpoint=f'/guilds/{guild_id}/channels',
+            token=bot_token,
+            json_body=payload,
+            bot=True,
+        )
+
+    async def edit_channel(self, channel_id: str, bot_token: str, payload: dict) -> dict:
+        return await self._discord_json_request(
+            method='PATCH',
+            endpoint=f'/channels/{channel_id}',
+            token=bot_token,
+            json_body=payload,
+            bot=True,
+        )
+
+    async def get_guild_channels(self, guild_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}/channels',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        channels = []
+        for item in result.get('data') or []:
+            channels.append(
+                {
+                    'id': str(item.get('id')),
+                    'name': item.get('name'),
+                    'type': item.get('type'),
+                    'topic': item.get('topic'),
+                    'category_id': item.get('parent_id'),
+                    'position': item.get('position'),
+                    'nsfw': bool(item.get('nsfw', False)),
+                    'member_count': item.get('member_count'),
+                }
+            )
+        return {'status': 'ok', 'channels': channels}
+
+    async def get_guild_roles(self, guild_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}/roles',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'roles': result.get('data') or []}
+
+    async def add_role_to_member(self, guild_id: str, user_id: str, role_id: str, bot_token: str, reason: str | None = None) -> dict:
+        return await self._discord_json_request(
+            method='PUT',
+            endpoint=f'/guilds/{guild_id}/members/{user_id}/roles/{role_id}',
+            token=bot_token,
+            bot=True,
+            reason=reason,
+        )
+
+    async def remove_role_from_member(self, guild_id: str, user_id: str, role_id: str, bot_token: str, reason: str | None = None) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/guilds/{guild_id}/members/{user_id}/roles/{role_id}',
+            token=bot_token,
+            bot=True,
+            reason=reason,
+        )
+
+    async def kick_member(self, guild_id: str, user_id: str, bot_token: str, reason: str | None = None) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/guilds/{guild_id}/members/{user_id}',
+            token=bot_token,
+            bot=True,
+            reason=reason,
+        )
+
+    async def ban_member(
+        self,
+        guild_id: str,
+        user_id: str,
+        bot_token: str,
+        reason: str | None = None,
+        delete_message_days: int = 0,
+    ) -> dict:
+        payload = {'delete_message_seconds': max(0, int(delete_message_days)) * 86400}
+        return await self._discord_json_request(
+            method='PUT',
+            endpoint=f'/guilds/{guild_id}/bans/{user_id}',
+            token=bot_token,
+            json_body=payload,
+            bot=True,
+            reason=reason,
+        )
+
+    async def unban_member(self, guild_id: str, user_id: str, bot_token: str, reason: str | None = None) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/guilds/{guild_id}/bans/{user_id}',
+            token=bot_token,
+            bot=True,
+            reason=reason,
+        )
+
+    async def create_thread(
+        self,
+        channel_id: str,
+        name: str,
+        token: str,
+        auto_archive_duration: int = 1440,
+        thread_type: int = 11,
+        message: str | None = None,
+        bot: bool = False,
+    ) -> dict:
+        payload = {
+            'name': name,
+            'auto_archive_duration': auto_archive_duration,
+            'type': thread_type,
+        }
+        if message:
+            payload['message'] = {'content': message}
+        return await self._discord_json_request(
+            method='POST',
+            endpoint=f'/channels/{channel_id}/threads',
+            token=token,
+            json_body=payload,
+            bot=bot,
+        )
+
+    async def add_reaction(self, channel_id: str, message_id: str, emoji: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        encoded = quote(emoji, safe='')
+        return await self._discord_json_request(
+            method='PUT',
+            endpoint=f'/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def remove_reaction(self, channel_id: str, message_id: str, emoji: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        encoded = quote(emoji, safe='')
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def pin_message(self, channel_id: str, message_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        return await self._discord_json_request(
+            method='PUT',
+            endpoint=f'/channels/{channel_id}/pins/{message_id}',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def unpin_message(self, channel_id: str, message_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/channels/{channel_id}/pins/{message_id}',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def bulk_delete_messages(self, channel_id: str, message_ids: list[str], bot_token: str) -> dict:
+        return await self._discord_json_request(
+            method='POST',
+            endpoint=f'/channels/{channel_id}/messages/bulk-delete',
+            token=bot_token,
+            json_body={'messages': [str(item) for item in message_ids[:100]]},
+            bot=True,
+        )
+
+    async def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        token: str,
+        content: str | None = None,
+        embeds: list[dict] | None = None,
+        proxy_url: str | None = None,
+        bot: bool = False,
+    ) -> dict:
+        payload: dict = {}
+        if content is not None:
+            payload['content'] = content
+        if embeds is not None:
+            payload['embeds'] = embeds
+        return await self._discord_json_request(
+            method='PATCH',
+            endpoint=f'/channels/{channel_id}/messages/{message_id}',
+            token=token,
+            json_body=payload,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+
+    async def get_guild_info(self, guild_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        guild_result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if guild_result.get('status') != 'ok':
+            return guild_result
+        channels_result = await self.get_guild_channels(guild_id=guild_id, token=token, proxy_url=proxy_url, bot=bot)
+        roles_result = await self.get_guild_roles(guild_id=guild_id, token=token, proxy_url=proxy_url, bot=bot)
+        guild = guild_result.get('data') or {}
+        return {
+            'status': 'ok',
+            'guild': guild,
+            'channels': channels_result.get('channels', []),
+            'roles': roles_result.get('roles', []),
+            'icon_url': (
+                f"https://cdn.discordapp.com/icons/{guild.get('id')}/{guild.get('icon')}.png"
+                if guild.get('id') and guild.get('icon')
+                else None
+            ),
+        }
+
+    async def search_guild_members(
+        self,
+        guild_id: str,
+        token: str,
+        query: str,
+        limit: int = 10,
+        proxy_url: str | None = None,
+        bot: bool = False,
+    ) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}/members/search',
+            token=token,
+            params={'query': query, 'limit': max(1, min(limit, 1000))},
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'members': result.get('data') or []}
+
+    async def get_guild_members_list(
+        self,
+        guild_id: str,
+        token: str,
+        limit: int = 100,
+        proxy_url: str | None = None,
+        bot: bool = False,
+    ) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}/members',
+            token=token,
+            params={'limit': max(1, min(limit, 1000))},
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'members': result.get('data') or []}
+
+    async def create_invite(
+        self,
+        channel_id: str,
+        token: str,
+        max_age: int = 86400,
+        max_uses: int = 0,
+        temporary: bool = False,
+        unique: bool = True,
+        bot: bool = False,
+    ) -> dict:
+        payload = {
+            'max_age': max_age,
+            'max_uses': max_uses,
+            'temporary': temporary,
+            'unique': unique,
+        }
+        return await self._discord_json_request(
+            method='POST',
+            endpoint=f'/channels/{channel_id}/invites',
+            token=token,
+            json_body=payload,
+            bot=bot,
+        )
+
+    async def get_channel_invites(self, channel_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/channels/{channel_id}/invites',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'invites': result.get('data') or []}
+
+    async def get_guild_invites(self, guild_id: str, token: str, proxy_url: str | None = None, bot: bool = False) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/guilds/{guild_id}/invites',
+            token=token,
+            proxy_url=proxy_url,
+            bot=bot,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'invites': result.get('data') or []}
+
+    async def delete_invite(self, invite_code: str, bot_token: str) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/invites/{invite_code}',
+            token=bot_token,
+            bot=True,
+        )
+
+    async def create_webhook(self, channel_id: str, bot_token: str, name: str = 'DFA Webhook', avatar: str | None = None) -> dict:
+        payload: dict = {'name': name}
+        if avatar is not None:
+            payload['avatar'] = avatar
+        return await self._discord_json_request(
+            method='POST',
+            endpoint=f'/channels/{channel_id}/webhooks',
+            token=bot_token,
+            json_body=payload,
+            bot=True,
+        )
+
+    async def delete_webhook(self, webhook_id: str, bot_token: str) -> dict:
+        return await self._discord_json_request(
+            method='DELETE',
+            endpoint=f'/webhooks/{webhook_id}',
+            token=bot_token,
+            bot=True,
+        )
+
+    async def list_webhooks(self, channel_id: str, bot_token: str) -> dict:
+        result = await self._discord_json_request(
+            method='GET',
+            endpoint=f'/channels/{channel_id}/webhooks',
+            token=bot_token,
+            bot=True,
+        )
+        if result.get('status') != 'ok':
+            return result
+        return {'status': 'ok', 'webhooks': result.get('data') or []}
+
+    async def send_via_webhook(
+        self,
+        webhook_url: str | None = None,
+        webhook_id: str | None = None,
+        webhook_token: str | None = None,
+        channel_id: str | None = None,
+        bot_token: str | None = None,
+        content: str | None = None,
+        username: str | None = None,
+        avatar_url: str | None = None,
+        tts: bool = False,
+        embeds: list[dict] | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        color: int | None = None,
+        fields: list[dict] | None = None,
+        footer_text: str | None = None,
+        image_url: str | None = None,
+        thumbnail_url: str | None = None,
+        author_name: str | None = None,
+        mention_everyone: bool = False,
+        mention_roles: list[str] | None = None,
+        mention_users: list[str] | None = None,
+    ) -> dict:
+        resolved_url = (webhook_url or '').strip()
+        if not resolved_url:
+            if webhook_id and webhook_token:
+                resolved_url = f'{self.base_url}/webhooks/{webhook_id}/{webhook_token}'
+            elif channel_id:
+                hook = await self.get_or_create_channel_webhook(channel_id=channel_id, bot_token=bot_token)
+                if hook.get('status') != 'ok':
+                    return hook
+                resolved_url = str(hook.get('url') or '')
+        if not resolved_url:
+            return {'status': 'failed', 'detail': 'Missing webhook_url or webhook credentials'}
+        body_embeds = embeds
+        if body_embeds is None:
+            embed = self._build_embed_payload(
+                title=title,
+                description=description,
+                color=color,
+                fields=fields,
+                footer_text=footer_text,
+                image_url=image_url,
+                thumbnail_url=thumbnail_url,
+                author_name=author_name,
+            )
+            body_embeds = [embed] if embed else []
+        mention_everyone = bool(mention_everyone or ('@everyone' in (content or '') or '@here' in (content or '')))
+        payload: dict = {
+            'content': content or '',
+            'tts': bool(tts),
+            'allowed_mentions': self._build_allowed_mentions(
+                mention_everyone=mention_everyone,
+                mention_roles=mention_roles,
+                mention_users=mention_users,
+            ),
+        }
+        if username is not None:
+            payload['username'] = username[:80]
+        if avatar_url is not None:
+            payload['avatar_url'] = avatar_url
+        if body_embeds:
+            payload['embeds'] = body_embeds
+        async with httpx.AsyncClient(timeout=20) as client:
+            try:
+                response = await client.post(f'{resolved_url}?wait=true', json=payload)
+                if response.status_code in (200, 201, 204):
+                    return {'status': 'sent', 'message': response.json() if response.content else {}}
+                return {'status': 'failed', 'code': response.status_code, 'detail': response.text[:500]}
+            except httpx.HTTPError as exc:
+                return {'status': 'error', 'detail': str(exc)}
 
     async def get_or_create_channel_webhook(
         self,

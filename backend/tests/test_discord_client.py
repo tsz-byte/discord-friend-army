@@ -154,6 +154,23 @@ class _WebhookAsyncClient:
         return _FakeResponse(200, {'id': 'm1'})
 
 
+class _SendEmbedAsyncClient:
+    def __init__(self, *args, **kwargs):
+        self.last_json = None
+        self.last_headers = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        self.last_json = json
+        self.last_headers = headers
+        return _FakeResponse(200, {'id': 'msg-1'})
+
+
 def test_join_uses_captcha_solution(monkeypatch):
     fake_client = _JoinAsyncClient()
 
@@ -597,3 +614,33 @@ def test_join_session_id_fallback_not_from_metadata(monkeypatch):
     assert len(sid) == 32 and all(c in '0123456789abcdef' for c in sid), (
         f'Expected random 32-char hex session_id, got: {sid!r}'
     )
+
+
+def test_send_embed_uses_passed_params(monkeypatch):
+    fake_client = _SendEmbedAsyncClient()
+
+    class _Factory:
+        def __call__(self, *args, **kwargs):
+            return fake_client
+
+    monkeypatch.setattr('app.services.discord_client.httpx.AsyncClient', _Factory())
+    client = DiscordClient()
+
+    result = __import__('asyncio').run(
+        client.send_embed(
+            channel_id='123',
+            token='user.token.value',
+            content='hello @everyone',
+            title='Custom Title',
+            description='Custom Description',
+            color=16711680,
+            fields=[{'name': 'Key', 'value': 'Value', 'inline': True}],
+        )
+    )
+
+    assert result['status'] == 'sent'
+    assert fake_client.last_json['content'] == 'hello @everyone'
+    assert fake_client.last_json['embeds'][0]['title'] == 'Custom Title'
+    assert fake_client.last_json['embeds'][0]['description'] == 'Custom Description'
+    assert fake_client.last_json['embeds'][0]['color'] == 16711680
+    assert fake_client.last_json['allowed_mentions']['parse'] == ['everyone']

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.routes_tools import router as tools_router
+from app.api.routes_agent_tools import router as agent_tools_router
 from app.models.research import GuildOptIn, MessageResearchEvent, UserPrivacyPreference
 from app.schemas.research import (
     AccountTokenCreateRequest,
@@ -17,6 +18,8 @@ from app.schemas.research import (
     AccountTokenStatusRequest,
     AIConversationRequest,
     AIConversationResponse,
+    AIAgentConversationRequest,
+    AIAgentConversationResponse,
     AppSettingResponse,
     AutoLoopStatusResponse,
     ChannelMappingRequest,
@@ -957,6 +960,21 @@ async def ai_chat(request: AIConversationRequest):
     return AIConversationResponse(**result)
 
 
+@router.post('/ai/agent', response_model=AIAgentConversationResponse)
+async def ai_agent_chat(request: AIAgentConversationRequest):
+    result = await ai_service.agent_chat(
+        message=request.message,
+        conversation_history=request.conversation_history,
+        system_prompt=request.system_prompt,
+        guild_id=request.guild_id,
+        max_agent_steps=request.max_steps,
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+    )
+    log_event('ai_agent_request', {'model': result.get('model'), 'tool_calls_made': result.get('tool_calls_made', 0)})
+    return AIAgentConversationResponse(**result)
+
+
 @router.get('/dashboard/stats', response_model=DashboardStatsResponse)
 def dashboard_stats(db: Session = Depends(get_db)):
     active_accounts = db.query(func.count(AccountToken.id)).filter(AccountToken.is_active.is_(True)).scalar() or 0
@@ -1315,3 +1333,4 @@ def realtime_events(
 
 
 router.include_router(tools_router)
+router.include_router(agent_tools_router)
