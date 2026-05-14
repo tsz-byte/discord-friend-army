@@ -1,5 +1,4 @@
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, func
-from datetime import datetime
 
 from app.db.session import Base
 
@@ -308,6 +307,6 @@ class ScheduledMessage(Base):
     send_at = Column(DateTime, nullable=False)
     payload = Column(JSON, nullable=False)
     status = Column(String, default='pending')
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     sent_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)

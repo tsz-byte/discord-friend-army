@@ -76,6 +76,7 @@ class AIChatService:
         messages = [{'role': 'system', 'content': system_prompt}]
         if conversation_history:
             messages.extend(conversation_history)
+        # Keep request payloads bounded for provider compatibility and predictable token usage.
         messages.append({'role': 'user', 'content': message[:4000]})
 
         payload = {
@@ -246,6 +247,7 @@ class AIChatService:
             messages.extend(conversation_history)
         if guild_id:
             messages.append({'role': 'system', 'content': f'Current guild context: {guild_id}'})
+        # Keep request payloads bounded for provider compatibility and predictable token usage.
         messages.append({'role': 'user', 'content': message[:4000]})
 
         headers = {
